@@ -16,9 +16,7 @@ package-lock.json
 /packages/**/node_modules/
 /apps/**/node_modules/
 
-# Ignore whole app directories (managed by root repo)
-/apps/api/
-/apps/mobile/
+
 
 ## Environment
 .env
