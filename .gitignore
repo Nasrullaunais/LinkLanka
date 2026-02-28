@@ -52,6 +52,14 @@ out/
 .expo/
 *.keystore
 
+# Google / Firebase service files (keep out of repo)
+**/google-services.json
+**/GoogleService-Info.plist
+**/service-account*.json
+**/serviceAccount*.json
+**/firebase-adminsdk*.json
+**/*credentials*.json
+
 ## Misc
 .cache/
 .parcel-cache/
