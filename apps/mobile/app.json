@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "LinkLanka",
+    "slug": "linklanka",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile",
+    "scheme": "linklanka",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
