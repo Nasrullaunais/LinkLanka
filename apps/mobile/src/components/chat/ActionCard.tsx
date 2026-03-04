@@ -1,10 +1,11 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import ActionEventEditor, {
@@ -65,6 +66,13 @@ function getActionLabel(type: ExtractedAction['type']): string {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+/** Stable storage key for this action's dismissed state. */
+function dismissKey(action: ExtractedAction): string {
+  // type + timestamp is specific enough since two different actions
+  // within the same millisecond are essentially impossible.
+  return `action_dismissed_${action.type}_${action.timestamp}`;
+}
+
 function SingleActionCard({
   action,
   isOwn,
@@ -73,9 +81,21 @@ function SingleActionCard({
   isOwn: boolean;
 }) {
   const [isAdded, setIsAdded] = useState(false);
-  const [isDismissed, setIsDismissed] = useState(false);
+  const [isDismissed, setIsDismissed] = useState<boolean | null>(null); // null = loading
   const [editorVisible, setEditorVisible] = useState(false);
   const { colors, isDark } = useTheme();
+
+  // Load persisted dismiss state on mount.
+  useEffect(() => {
+    AsyncStorage.getItem(dismissKey(action)).then((val) => {
+      setIsDismissed(val === 'true');
+    });
+  }, [action]);
+
+  const handleDismiss = useCallback(() => {
+    setIsDismissed(true);
+    AsyncStorage.setItem(dismissKey(action), 'true');
+  }, [action]);
 
   const editorData: EventEditorData = {
     title: action.title,
@@ -98,7 +118,8 @@ function SingleActionCard({
   const calBtnAddedBg = isDark ? 'rgba(34,197,94,0.15)' : '#d1fae5';
   const calBtnAddedText = isDark ? '#34d399' : '#059669';
 
-  if (isDismissed) return null;
+  // null = still loading from storage; don't flash the card then hide it
+  if (isDismissed === null || isDismissed) return null;
 
   return (
     <View style={[styles.actionCard, {
@@ -118,7 +139,7 @@ function SingleActionCard({
         </View>
         <Text style={[styles.actionLabel, { color: colors.primary }]}>{getActionLabel(action.type)}</Text>
         <Pressable
-          onPress={() => setIsDismissed(true)}
+          onPress={handleDismiss}
           hitSlop={10}
           style={styles.closeButton}
         >

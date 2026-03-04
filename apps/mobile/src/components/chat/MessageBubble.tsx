@@ -467,6 +467,20 @@ function MessageBubble({
     }
   };
 
+  // ── Translation expand/collapse ──────────────────────────────────────
+  const TRANSLATION_COLLAPSED_H = 3 * 20; // 3 lines × lineHeight 20
+  const [translationExpanded, setTranslationExpanded] = useState(false);
+  const [translationTruncatable, setTranslationTruncatable] = useState(false);
+  const translationFullHeight = useRef(0);
+  const translationHeight = useSharedValue(TRANSLATION_COLLAPSED_H);
+  const translationChevronAngle = useSharedValue(0);
+  const translationTextStyle = useAnimatedStyle(() => ({
+    maxHeight: translationHeight.value,
+  }));
+  const translationChevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${translationChevronAngle.value}deg` }],
+  }));
+
   // ── Text-to-Speech for translated audio messages ──────────────────────
   const [isSpeaking, setIsSpeaking] = useState(false);
 
@@ -540,7 +554,49 @@ function MessageBubble({
           borderColor: isOwn ? colors.translationBorderOwn : colors.translationBorder,
         },
       ]}>
-        <Text style={[styles.translationText, { color: colors.translationText }]}>{translatedText}</Text>
+        {/* Invisible measurement text — detects overflow and stores full pixel height */}
+        <View style={styles.translationMeasureWrapper}>
+          <Text
+            style={styles.translationText}
+            onTextLayout={(e) => {
+              const lines = e.nativeEvent.lines;
+              translationFullHeight.current = lines.reduce((s, l) => s + l.height, 0);
+              setTranslationTruncatable(lines.length > 3);
+            }}
+          >
+            {translatedText}
+          </Text>
+        </View>
+
+        {/* Animated clipping container — height smoothly transitions between
+             collapsed (3 lines) and the measured full height */}
+        <Animated.View style={[translationTextStyle, { overflow: 'hidden' }]}>
+          <Text style={[styles.translationText, { color: colors.translationText }]}>
+            {translatedText}
+          </Text>
+        </Animated.View>
+
+        {/* Chevron toggle — only shown when text overflows 3 lines */}
+        {translationTruncatable && (
+          <Pressable
+            onPress={() => {
+              const next = !translationExpanded;
+              setTranslationExpanded(next);
+              const targetH = next ? translationFullHeight.current : TRANSLATION_COLLAPSED_H;
+              translationHeight.value = withTiming(targetH, {
+                duration: 260,
+                easing: Easing.out(Easing.cubic),
+              });
+              translationChevronAngle.value = withTiming(next ? 180 : 0, { duration: 260 });
+            }}
+            hitSlop={8}
+            style={styles.translationExpandBtn}
+          >
+            <Animated.View style={translationChevronStyle}>
+              <Ionicons name="chevron-down" size={14} color={colors.translationText} />
+            </Animated.View>
+          </Pressable>
+        )}
 
         <View style={styles.translationFooter}>
           {/* 🔊 Listen button — TTS for translated audio messages */}
@@ -849,6 +905,15 @@ const styles = StyleSheet.create({
   translationText: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  translationMeasureWrapper: {
+    height: 0,
+    overflow: 'hidden',
+  },
+  translationExpandBtn: {
+    alignSelf: 'center',
+    marginTop: 2,
+    padding: 2,
   },
   translationFooter: {
     flexDirection: 'row',

@@ -7,8 +7,9 @@ import {
 } from '../utils/secureStorage';
 
 // ── Config ───────────────────────────────────────────────────────────────────
-// Change this to your local IP (or production URL) before running the app.
-export const API_BASE_URL = 'http://192.168.8.114:3000';
+// API URL is injected via EXPO_PUBLIC_API_URL in apps/mobile/.env
+// Run `./use-home.sh` or `./use-uni.sh` from the workspace root to switch environments.
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000';
 
 const TOKEN_KEY = 'jwt_token';
 
