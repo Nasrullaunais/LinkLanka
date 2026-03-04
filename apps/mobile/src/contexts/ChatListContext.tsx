@@ -1,32 +1,36 @@
 import React, { createContext, useContext, useMemo } from 'react';
+import type { SharedValue } from 'react-native-reanimated';
 
 /**
  * Lightweight context that lets individual `MessageBubble` components
- * subscribe to `selectionMode` and `highlightedMessageId` **without**
- * requiring the FlatList's `renderItem` to carry these as props.
+ * animate in response to selection mode **without any React re-renders**.
  *
- * Because `renderItem` no longer depends on these values, toggling
- * selection mode or highlighting a search result no longer forces
- * every visible cell to re-render.
+ * `selectionModeProgress` is a Reanimated SharedValue<number> (0 = off,
+ * 1 = on) created once in ChatScreen and passed down here. Because the
+ * SharedValue *object reference* is stable, the context value never
+ * changes when the user enters or exits selection mode — each bubble's
+ * `useAnimatedStyle` reacts to the value change directly on the UI thread.
+ *
+ * Only `highlightedMessageId` changes (rare — search navigation) cause
+ * a React context update and re-render.
  */
 interface ChatListContextType {
-  selectionMode: boolean;
+  selectionModeProgress: SharedValue<number>;
   highlightedMessageId: string | null;
 }
 
-const ChatListContext = createContext<ChatListContextType>({
-  selectionMode: false,
-  highlightedMessageId: null,
-});
+const ChatListContext = createContext<ChatListContextType | null>(null);
 
 export function ChatListProvider({
-  selectionMode,
+  selectionModeProgress,
   highlightedMessageId,
   children,
 }: ChatListContextType & { children: React.ReactNode }) {
   const value = useMemo(
-    () => ({ selectionMode, highlightedMessageId }),
-    [selectionMode, highlightedMessageId],
+    () => ({ selectionModeProgress, highlightedMessageId }),
+    // selectionModeProgress is a stable object reference — its .value
+    // changing does NOT recreate this memo or re-render subscribers.
+    [selectionModeProgress, highlightedMessageId],
   );
 
   return (
@@ -35,5 +39,7 @@ export function ChatListProvider({
 }
 
 export function useChatList() {
-  return useContext(ChatListContext);
+  const ctx = useContext(ChatListContext);
+  if (!ctx) throw new Error('useChatList must be used inside ChatListProvider');
+  return ctx;
 }

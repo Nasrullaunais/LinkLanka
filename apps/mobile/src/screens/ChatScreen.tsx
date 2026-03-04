@@ -184,6 +184,9 @@ export default function ChatScreen({ navigation, route }: Props) {
   // ── Selection state ─────────────────────────────────────────────────────
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Shared value passed through ChatListContext so each MessageBubble can
+  // animate its checkmark purely on the UI thread with zero JS re-renders.
+  const selectionModeProgress = useSharedValue(0);
 
   // ── Header cross-fade animation ─────────────────────────────────────────
   // Both header rows are always mounted and cross-faded via opacity so that
@@ -197,7 +200,10 @@ export default function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     selHeaderOpacity.value = withTiming(selectionMode ? 1 : 0, { duration: 200 });
     normHeaderOpacity.value = withTiming(selectionMode ? 0 : 1, { duration: 200 });
-  }, [selectionMode, selHeaderOpacity, normHeaderOpacity]);
+    // Drive the per-bubble checkmark animation on the UI thread.
+    // 180 ms matches the original checkmark timing.
+    selectionModeProgress.value = withTiming(selectionMode ? 1 : 0, { duration: 180 });
+  }, [selectionMode, selHeaderOpacity, normHeaderOpacity, selectionModeProgress]);
 
   const selHeaderAnimStyle = useAnimatedStyle(() => ({ opacity: selHeaderOpacity.value }));
   const normHeaderAnimStyle = useAnimatedStyle(() => ({ opacity: normHeaderOpacity.value }));
@@ -945,7 +951,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           <ActivityIndicator size="large" color={colors.spinnerColor} />
         </View>
       ) : (
-        <ChatListProvider selectionMode={selectionMode} highlightedMessageId={highlightedMessageId}>
+        <ChatListProvider selectionModeProgress={selectionModeProgress} highlightedMessageId={highlightedMessageId}>
           <FlatList
             ref={flatListRef}
             data={messages}

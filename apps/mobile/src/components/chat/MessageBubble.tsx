@@ -348,9 +348,10 @@ function MessageBubble({
   onOpenDocumentInterrogation,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
-  // Read selectionMode & highlightedMessageId from context so that
-  // the FlatList's renderItem doesn't need them in its dependency array.
-  const { selectionMode, highlightedMessageId } = useChatList();
+  // Read selectionModeProgress (SharedValue) & highlightedMessageId from
+  // context. The shared value drives animations purely on the UI thread so
+  // entering/exiting selection mode causes zero React re-renders here.
+  const { selectionModeProgress, highlightedMessageId } = useChatList();
   const isHighlighted = message.id === highlightedMessageId;
 
   const isOwn = message.senderId === currentUserId;
@@ -401,28 +402,22 @@ function MessageBubble({
     borderRadius: 10,
   }));
 
-  // Checkmark circle: scales in on selection and collapses to 0 width when
-  // selection mode is off, so it doesn't reserve invisible horizontal space.
+  // ── Checkmark animation (UI-thread only) ─────────────────────────────
+  // checkScale is still per-bubble (driven by isSelected React prop).
   const checkScale = useSharedValue(isSelected ? 1 : 0.4);
-  const checkOpacity = useSharedValue(selectionMode ? 1 : 0);
-  // Width animates from 0 (hidden, takes no space) to 22 (visible).
-  const checkWidthSV = useSharedValue(selectionMode ? 22 : 0);
-
-  useEffect(() => {
-    checkOpacity.value = withTiming(selectionMode ? 1 : 0, { duration: 180 });
-    checkWidthSV.value = withTiming(selectionMode ? 22 : 0, { duration: 180 });
-  }, [selectionMode, checkOpacity, checkWidthSV]);
 
   useEffect(() => {
     checkScale.value = withTiming(isSelected ? 1 : 0.6, { duration: 160 });
   }, [isSelected, checkScale]);
 
+  // selectionModeProgress (0 → 1) comes from context as a stable SharedValue
+  // reference. Reading it inside useAnimatedStyle means the opacity + width
+  // animation runs entirely on the UI thread — no JS re-renders on any bubble
+  // when the user enters or exits selection mode.
   const animatedCheckStyle = useAnimatedStyle(() => ({
-    opacity: checkOpacity.value,
+    opacity: selectionModeProgress.value,
     transform: [{ scale: checkScale.value }],
-    // Collapse width to 0 so the invisible circle doesn't push the bubble
-    // away from the screen edge in normal (non-selection) mode.
-    width: checkWidthSV.value,
+    width: selectionModeProgress.value * 22,
   }));
 
   // ── Content ────────────────────────────────────────────────────────────
@@ -639,6 +634,13 @@ function MessageBubble({
     );
   };
 
+  // In normal mode nothing happens; in selection mode the tap selects/
+  // deselects. Checking the shared value instead of a React boolean means
+  // the Pressable can always have an onPress without triggering re-renders.
+  const handleTap = useCallback(() => {
+    if (selectionModeProgress.value > 0.5) onPress?.(message.id);
+  }, [selectionModeProgress, message.id, onPress]);
+
   // ── Optimistic bubble pulse (alive "sending" feel) ───────────────────
   const optimisticOpacity = useSharedValue(isOptimistic ? 0.7 : 1);
   useEffect(() => {
@@ -666,7 +668,7 @@ function MessageBubble({
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         onLongPress?.(message.id);
       }}
-      onPress={selectionMode ? () => onPress?.(message.id) : undefined}
+      onPress={handleTap}
       delayLongPress={300}
     >
       <Animated.View style={[styles.rowWrapper, animatedRowBgStyle, highlightAnimStyle]}>
