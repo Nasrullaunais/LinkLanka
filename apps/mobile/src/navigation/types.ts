@@ -32,8 +32,12 @@ export type AppStackParamList = {
     isDm?: boolean;
     preferredLanguage?: string | null;
     otherUserPicture?: string | null;
+    /** ID of the other participant in a DM — used to navigate to PersonInfo. */
+    otherUserId?: string | null;
   };
   CreateGroup: undefined;
   Profile: undefined;
   PersonalDictionary: undefined;
+  GroupInfo: { groupId: string; groupName: string };
+  PersonInfo: { userId: string; displayName: string; profilePictureUrl?: string | null };
 };

@@ -1,0 +1,226 @@
+================================================================================
+  SWOT ANALYSIS — LinkLanka (The AI Mediator)
+  SE2030 Software Engineering | University Project
+  Analysis Date: March 7, 2026
+================================================================================
+
+PURPOSE
+-------
+This SWOT evaluates whether LinkLanka is realistic and achievable as a university
+software engineering project, with reference to key risks, design decisions, and
+challenges the team encountered during development.
+
+================================================================================
+  S T R E N G T H S
+================================================================================
+
+S1. ADDRESSES A REAL, UNRESOLVED PROBLEM
+    Standard translation tools fail on Singlish and Tanglish because they
+    translate words literally rather than interpreting meaning. LinkLanka solves
+    this by using AI to understand the intent behind code-mixed language — a gap
+    that is directly observable and relatable to the target users.
+
+S2. ALL CORE FEATURES ARE IMPLEMENTED
+    Every feature declared in the project scope is working:
+      - Real-time group chat with text, voice, and document messages
+      - Intent-aware translation across Singlish, Tanglish, and English
+      - Voice message recording and transcription
+      - Document summarisation and question-answering
+      - Dialect conversion (casual ↔ professional)
+      - Personal slang dictionary that feeds into the translation
+      - Smart extraction of meetings and reminders from chat messages
+    The project is demonstrably functional, not speculative.
+
+S3. CLEAR, WELL-DEFINED TARGET USERS
+    Three user groups are identified from the start (university students,
+    corporate professionals, general public) and each feature maps directly to
+    their needs. This focus kept the scope manageable and made design decisions
+    easier to justify.
+
+S4. SECURE AUTHENTICATION AND INPUT HANDLING
+    Passwords are stored hashed, never in plain text. All API routes are
+    protected by token-based authentication, including the real-time chat
+    connection. User input is validated and sanitised before reaching any
+    business logic. Rate limiting prevents abuse.
+
+S5. PERSONALISATION AS A DIFFERENTIATOR
+    Users can define their own slang words and have those definitions
+    automatically factored into their translations. This makes the system more
+    accurate over time for each individual user — a feature no standard
+    translation tool offers.
+
+S6. CROSS-PLATFORM MOBILE APP
+    The application runs on both Android and iOS from a single shared codebase.
+    This halved the mobile development effort while delivering the same
+    experience on both platforms.
+
+================================================================================
+  W E A K N E S S E S
+================================================================================
+
+W1. DEPENDENT ON AN EXTERNAL AI SERVICE
+    The translation, voice processing, document analysis, and dialect conversion
+    all go through a third-party AI API. If that service is unavailable, the
+    core features of the application stop working. There is currently no fallback
+    mode — the app cannot function offline or degrade gracefully when the AI
+    service is down.
+
+W2. AI OUTPUT CANNOT BE FULLY GUARANTEED
+    AI models can occasionally produce incorrect or unexpected translations,
+    particularly for very ambiguous inputs. The system computes a confidence
+    score but this is not yet shown to the user as a visible warning. A user
+    could unknowingly send a mistranslated formal message.
+
+W3. NO AUTOMATED TESTS
+    The testing infrastructure was set up but the complex AI-driven features
+    (translation, voice, document analysis) have no automated unit or integration
+    tests. This means bugs introduced by changing a prompt or a service can only
+    be caught by manual testing.
+
+W4. OFFLINE SUPPORT IS INCOMPLETE
+    The project description specifies that messages should be queued when the
+    user is offline. This has not been implemented. If the user loses connectivity,
+    any message they try to send is lost.
+
+W5. NOT DESIGNED FOR LARGE-SCALE DEPLOYMENT
+    The current design works well for a small number of concurrent users (as
+    expected in a university demo). It has not been designed with cloud deployment,
+    load balancing, or multiple server instances in mind. This is an acceptable
+    tradeoff for the academic scope but would need to be addressed before any
+    real-world launch.
+
+W6. SIX-PERSON TEAM WITH ACADEMIC CONSTRAINTS
+    Coordinating six contributors under assignment deadlines, with varying
+    availability and skill levels, introduced challenges in maintaining consistent
+    code quality, avoiding merge conflicts, and ensuring all parts integrated
+    smoothly. Some non-functional requirements (monitoring, formal database
+    migrations, CI/CD pipelines) were deprioritised as a result.
+
+================================================================================
+  O P P O R T U N I T I E S
+================================================================================
+
+O1. NO EXISTING SOLUTION FOR THIS SPECIFIC PROBLEM
+    There is no well-known product that handles code-mixed Sri Lankan dialects
+    with intent-awareness. This gives LinkLanka a clear and defensible niche
+    that is not easily replicated by adding a feature to an existing global app.
+
+O2. APPLICABLE ACROSS SOUTH AND SOUTHEAST ASIA
+    The same approach — AI-mediated translation of code-mixed regional dialects
+    — can be applied to Hinglish (India), Manglish (Malaysia), and Taglish
+    (Philippines). The platform architecture supports this kind of expansion.
+
+O3. POTENTIAL FOR INSTITUTIONAL USE
+    Sri Lankan universities and corporations dealing with multilingual teams
+    have an immediate use case. The application could be piloted in academic
+    group projects or offered to regional offices of larger companies.
+
+O4. PERSONAL DICTIONARY COULD GROW INTO A COMMUNITY CORPUS
+    If many users add and share slang definitions, the platform accumulates a
+    crowd-sourced linguistic dataset for Sri Lankan dialects — a resource that
+    grows in value over time and cannot be easily replicated.
+
+O5. AI QUALITY IMPROVES AUTOMATICALLY
+    Since the translation quality comes from a continuously updated AI model,
+    the application's core capability improves over time without the team
+    needing to retrain or maintain a custom model. Improvements to the underlying
+    AI service benefit all users automatically.
+
+O6. CALENDAR AND PRODUCTIVITY INTEGRATION
+    The feature that automatically detects meeting times and reminders from
+    casual chat and creates calendar events is a compelling standalone
+    productivity tool. This could be expanded or commercialised independently.
+
+================================================================================
+  T H R E A T S
+================================================================================
+
+T1. DEPENDENCY ON A THIRD-PARTY AI SERVICE
+    The team has no control over the pricing, availability, or terms of the
+    AI service used. If pricing increases significantly or access is restricted,
+    the most important features of the application become either too expensive
+    to run or unavailable — without any code change from the team's side.
+
+T2. PRIVACY AND DATA HANDLING CONCERNS
+    User messages, voice recordings, and uploaded documents are processed
+    externally. This raises questions about data privacy and compliance with
+    Sri Lanka's Personal Data Protection Act. In a real deployment, users
+    would need to be informed and consent to this processing. This was
+    out of scope for the academic project but would be a legal requirement
+    before any public release.
+
+T3. COMPETING WITH ESTABLISHED MESSAGING PLATFORMS
+    Target users already use WhatsApp and Messenger for Singlish/Tanglish
+    communication. Convincing them to move to a new platform requires a strong
+    enough incentive. The network effect — needing contacts to also be on the
+    platform — is a significant barrier to organic adoption.
+
+T4. CONNECTIVITY REQUIREMENT LIMITS RURAL REACH
+    Every AI feature requires a live internet connection. For users in areas
+    with poor connectivity — who arguably face the highest language barriers —
+    the application cannot reliably serve them. This limits the "general public"
+    use case in practice.
+
+T5. POTENTIAL FOR MISTRANSLATION TO HARM TRUST
+    In formal or professional use cases, a single badly translated message
+    reaching a manager, professor, or client could damage the user's credibility
+    and erode trust in the platform. This risk grows with the stakes of the
+    communication context.
+
+================================================================================
+  RISKS, HOW THEY WERE HANDLED, AND DESIGN DECISIONS
+================================================================================
+
+CHALLENGE: Translating informal Singlish/Tanglish with preserved intent
+  HOW WE HANDLED IT: Rather than building a traditional translation pipeline,
+  we designed the system to send the full conversation history to the AI model
+  with each message. This gives the AI context to understand what the speaker
+  actually means, not just what they typed. This was the central design decision
+  of the project and is what distinguishes it from a simple word-substitution
+  translator.
+
+CHALLENGE: AI can return unexpected or malformed output
+  HOW WE HANDLED IT: Every AI response is validated against a strict data
+  schema before being accepted. If the AI returns output in the wrong structure,
+  it is rejected — the application never silently accepts a corrupt AI response.
+  A confidence score is also calculated and returned with each translation.
+
+CHALLENGE: Audio messages are slow to process — they block real-time chat
+  HOW WE HANDLED IT: Audio messages are processed through a separate REST
+  endpoint rather than through the same real-time connection used for text.
+  This keeps text chat fast and low-latency while audio goes through a heavier
+  processing pipeline that includes an audibility check before reaching the AI.
+
+CHALLENGE: Coordinating six team members on a shared codebase
+  HOW WE HANDLED IT: The project was structured as a monorepo with clearly
+  separated modules — each feature is a self-contained unit with its own
+  service, controller, and data model. This reduced conflicts between team
+  members and made it possible to develop features in parallel.
+
+CHALLENGE: User-specific slang is not understood by the AI out of the box
+  HOW WE HANDLED IT: We built a personal dictionary feature where each user
+  can define their own slang. These definitions are compiled and injected
+  directly into the translation instruction each time a message is processed,
+  so the AI is explicitly told what those words mean to that individual user.
+
+CHALLENGE: Preventing the app from being misused or abused
+  HOW WE HANDLED IT: All endpoints require authentication. Input is validated
+  and stripped of unexpected fields before processing. Global rate limiting
+  prevents any single client from flooding the server with requests.
+
+================================================================================
+  OVERALL VERDICT
+================================================================================
+
+LinkLanka is realistic and achievable for a university software engineering
+project. All core requirements have been implemented and the application works
+as described. The identified weaknesses — no automated tests, incomplete offline
+support, no cloud deployment strategy — are honest acknowledgements of scope
+trade-offs made under academic time and resource constraints, not fundamental
+design failures. The problem the project addresses is real, the solution is
+technically sound, and there is clear potential for the system to be evolved
+into a production-ready product with targeted additional work.
+
+================================================================================
+END OF SWOT ANALYSIS
+================================================================================

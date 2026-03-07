@@ -13,7 +13,7 @@ import { getSecureItem, setSecureItem } from '../utils/secureStorage';
 
 const lightColors = {
   // Base
-  background: '#ffffff',
+  background: '#f0f0f0',
   surface: '#f9fafb',
   surfaceElevated: '#ffffff',
 
@@ -37,7 +37,7 @@ const lightColors = {
   // Chat bubbles
   bubbleOwn: '#4f46e5',
   bubbleOwnText: '#ffffff',
-  bubbleReceived: '#e8edf5',
+  bubbleReceived: '#e0e0e0',
   bubbleReceivedText: '#1f2937',
   bubbleShadow: '#000000',
 
@@ -52,15 +52,15 @@ const lightColors = {
   audioTimeReceived: '#6366f1',
 
   // Translation card
-  translationBg: '#eef2ff',
-  translationBorder: '#e0e7ff',
+  translationBg: '#d0d0d0',
+  translationBorder: '#b8b8b8',
   translationBgOwn: '#ede9fe',
   translationBorderOwn: '#ddd6fe',
-  translationText: '#312e81',
+  translationText: '#374151',
 
   // Confidence badge
-  confidenceBg: '#c7d2fe',
-  confidenceText: '#3730a3',
+  confidenceBg: '#b8b8b8',
+  confidenceText: '#374151',
 
   // AI mediating
   mediatingColor: '#a78bfa',

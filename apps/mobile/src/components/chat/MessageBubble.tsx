@@ -1,28 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import * as Speech from 'expo-speech';
 import {
-  Image,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
+  useDerivedValue,
+  useAnimatedReaction,
   withRepeat,
   withTiming,
   withSequence,
-  withDelay,
-  interpolateColor,
+  runOnJS,
   Easing,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { useAudioPlayer, useAudioPlayerStatus, AudioModule } from 'expo-audio';
+import type { SharedValue } from 'react-native-reanimated';
 import { API_BASE_URL } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChatList } from '../../contexts/ChatListContext';
+import { useChatAudioPlayer } from '../../contexts/ChatAudioPlayerContext';
 import DocumentBubbleContent from './DocumentBubbleContent';
 import ActionCard, { type ExtractedAction } from './ActionCard';
 
@@ -43,17 +45,19 @@ export interface ChatMessage {
   extractedActions?: ExtractedAction[] | null;
   isOptimistic?: boolean;
   isRetrying?: boolean;
+  /** Set when the server has saved the raw message but AI translation is
+   *  still in progress (two-phase send). Cleared when `messageTranslated`
+   *  arrives from the server. */
+  isTranslating?: boolean;
   isEdited?: boolean;
-  isSelected?: boolean;
   createdAt?: string;
 }
 
-type PreferredLanguage = 'english' | 'singlish' | 'tanglish';
+// PreferredLanguage is now sourced from ChatListContext
 
 interface MessageBubbleProps {
   message: ChatMessage;
   currentUserId: string;
-  preferredLanguage: PreferredLanguage;
   onRetry?: (messageId: string) => void;
   /** Called when the user long-presses the message — triggers selection mode */
   onLongPress?: (messageId: string) => void;
@@ -99,66 +103,71 @@ function formatSentTime(iso: string): string {
   const ampm = h >= 12 ? 'PM' : 'AM';
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
-/** Enhanced "AI mediating…" indicator with wave-dots and shimmer text. */
-function AIMediatingIndicator() {
-  const { colors } = useTheme();
 
-  // ── Sparkle icon: subtle continuous rotation ──
-  const rotation = useSharedValue(0);
-  useEffect(() => {
-    rotation.value = withRepeat(
-      withTiming(360, { duration: 4000, easing: Easing.linear }),
-      -1, // infinite
-      false,
-    );
-  }, [rotation]);
-  const sparkleStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
-  }));
+// ── Shared animation driver for all AIMediatingIndicator instances ──────────
+// A single React context provides ONE set of animated values that every
+// indicator reads from on the UI thread. This means even 50 visible
+// "AI mediating…" badges drive from just 2 shared values total instead of
+// 7 per instance (was: 50×7 = 350 concurrent infinite animations).
+const MediatingAnimContext = React.createContext<{
+  shimmer: SharedValue<number>;
+  dotPhase: SharedValue<number>;
+} | null>(null);
 
-  // ── Three wave-dots: staggered scale + opacity ──
-  const dot0 = useSharedValue(0);
-  const dot1 = useSharedValue(0);
-  const dot2 = useSharedValue(0);
-  useEffect(() => {
-    const bounce = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 400, easing: Easing.out(Easing.ease) }),
-        withTiming(0, { duration: 400, easing: Easing.in(Easing.ease) }),
-      ),
-      -1,
-      false,
-    );
-    dot0.value = bounce;
-    dot1.value = withDelay(150, bounce);
-    dot2.value = withDelay(300, bounce);
-  }, [dot0, dot1, dot2]);
-
-  const dotStyle0 = useAnimatedStyle(() => ({
-    opacity: 0.4 + dot0.value * 0.6,
-    transform: [{ scale: 0.6 + dot0.value * 0.4 }],
-  }));
-  const dotStyle1 = useAnimatedStyle(() => ({
-    opacity: 0.4 + dot1.value * 0.6,
-    transform: [{ scale: 0.6 + dot1.value * 0.4 }],
-  }));
-  const dotStyle2 = useAnimatedStyle(() => ({
-    opacity: 0.4 + dot2.value * 0.6,
-    transform: [{ scale: 0.6 + dot2.value * 0.4 }],
-  }));
-
-  // ── Shimmer sweep on the label text ──
+/** Mount once near the list root — drives ALL AIMediatingIndicator instances. */
+export function MediatingAnimProvider({ children }: { children: React.ReactNode }) {
   const shimmer = useSharedValue(0);
+  const dotPhase = useSharedValue(0);
+
   useEffect(() => {
+    // Single shimmer loop (opacity pulse) shared by every indicator
     shimmer.value = withRepeat(
       withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.ease) }),
       -1,
-      false,
+      true, // reverse for smooth back-and-forth
     );
-  }, [shimmer]);
+    // Single dot phase loop: 0→1 over 800ms, reverses
+    dotPhase.value = withRepeat(
+      withTiming(1, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true,
+    );
+  }, [shimmer, dotPhase]);
+
+  const value = useMemo(() => ({ shimmer, dotPhase }), [shimmer, dotPhase]);
+  return (
+    <MediatingAnimContext.Provider value={value}>
+      {children}
+    </MediatingAnimContext.Provider>
+  );
+}
+
+/** Lightweight "AI mediating…" indicator — all animation values read from shared context. */
+function AIMediatingIndicator() {
+  const { colors } = useTheme();
+  const anim = React.useContext(MediatingAnimContext);
+
+  // Derive per-dot styles from the single shared dotPhase via stagger offsets.
+  // If provider is missing (should never happen), fall back to static display.
   const shimmerTextStyle = useAnimatedStyle(() => ({
-    opacity: 0.55 + shimmer.value * 0.45,
+    opacity: anim ? 0.55 + anim.shimmer.value * 0.45 : 1,
   }));
+
+  const dotStyle0 = useAnimatedStyle(() => {
+    const v = anim ? anim.dotPhase.value : 0;
+    return { opacity: 0.4 + v * 0.6, transform: [{ scale: 0.6 + v * 0.4 }] };
+  });
+  const dotStyle1 = useAnimatedStyle(() => {
+    // Offset the phase by ~0.33 for stagger effect
+    const raw = anim ? (anim.dotPhase.value + 0.33) % 1 : 0;
+    const v = raw > 0.5 ? 2 * (1 - raw) : 2 * raw; // triangle wave
+    return { opacity: 0.4 + v * 0.6, transform: [{ scale: 0.6 + v * 0.4 }] };
+  });
+  const dotStyle2 = useAnimatedStyle(() => {
+    const raw = anim ? (anim.dotPhase.value + 0.66) % 1 : 0;
+    const v = raw > 0.5 ? 2 * (1 - raw) : 2 * raw;
+    return { opacity: 0.4 + v * 0.6, transform: [{ scale: 0.6 + v * 0.4 }] };
+  });
 
   const dotBase = {
     width: 5,
@@ -169,9 +178,7 @@ function AIMediatingIndicator() {
 
   return (
     <View style={styles.mediatingRow}>
-      <Animated.View style={sparkleStyle}>
-        <Ionicons name="sparkles" size={12} color={colors.mediatingColor} />
-      </Animated.View>
+      <Ionicons name="sparkles" size={12} color={colors.mediatingColor} />
       <Animated.Text style={[styles.mediatingText, { color: colors.mediatingColor }, shimmerTextStyle]}>
         AI mediating
       </Animated.Text>
@@ -185,8 +192,9 @@ function AIMediatingIndicator() {
 }
 
 // ── Waveform helpers ─────────────────────────────────────────────────────────
-/** Number of waveform bars shown in the playback visualiser. */
-const PLAYER_WAVEFORM_BARS = 32;
+/** Number of waveform bars shown in the playback visualiser.
+ *  Reduced from 32 → 20 to cut View element count (2 layers × 20 = 40 vs 64). */
+const PLAYER_WAVEFORM_BARS = 20;
 
 /**
  * Generate a deterministic list of bar heights (0–1) seeded by the audio URI
@@ -204,80 +212,98 @@ function generateWaveform(seed: string, count: number): number[] {
   });
 }
 
-/** Audio player with play/pause, smooth waveform progress, tap-to-seek, and footer timestamps. */
-function AudioPlayer({ uri, isOwn, sentAt }: { uri: string; isOwn: boolean; sentAt?: string }) {
+/**
+ * Lightweight audio player bubble — does NOT create its own native audio player.
+ * Instead it reads from the shared ChatAudioPlayerProvider. Only the bubble
+ * whose messageId matches the provider's activeMessageId shows animated
+ * progress; all others render a cheap static waveform + play icon.
+ *
+ * This eliminates N native player instances + N×100ms status subscriptions
+ * during scroll, replacing them with a SINGLE shared player in the provider.
+ */
+const AudioPlayer = memo(function AudioPlayer({
+  uri,
+  isOwn,
+  sentAt,
+  messageId,
+}: {
+  uri: string;
+  isOwn: boolean;
+  sentAt?: string;
+  messageId: string;
+}) {
   const { colors } = useTheme();
   const normalizedUri = normalizeAudioUri(uri);
-  // Pass null instead of empty string to avoid creating a broken native player
-  // for optimistic messages whose URI hasn't been resolved yet.
-  const player = useAudioPlayer(normalizedUri || null);
-  const status = useAudioPlayerStatus(player);
-
-  // Keep a ref so callbacks can read the latest status without being in their
-  // dependency array — prevents recreating on every 100 ms status tick.
-  const statusRef = useRef(status);
-  statusRef.current = status;
+  const audioCtx = useChatAudioPlayer(); // stable context — NEVER triggers re-renders
 
   // Shared values kept on the UI thread for smooth animation.
-  const trackWidthSV   = useSharedValue(0);
-  const smoothProgress = useSharedValue(0);
+  const trackWidthSV = useSharedValue(0);
 
   // Stable waveform shape — seeded from URI so it never jumps on re-render.
   const waveform = useMemo(() => generateWaveform(uri, PLAYER_WAVEFORM_BARS), [uri]);
 
-  const progress = status.duration > 0 ? Math.min(1, status.currentTime / status.duration) : 0;
+  // ── Play/pause icon — only re-renders this component when state flips ──
+  const [showPause, setShowPause] = useState(false);
+  useAnimatedReaction(
+    () => audioCtx.activeMessageId.value === messageId && audioCtx.isPlayingSV.value,
+    (playing, prev) => {
+      if (playing !== prev) {
+        runOnJS(setShowPause)(playing);
+      }
+    },
+  );
 
-  // Smoothly interpolate between status-update ticks (≈ 100 ms).
-  useEffect(() => {
-    smoothProgress.value = withTiming(progress, { duration: 100 });
-  }, [progress, smoothProgress]);
+  // ── Time label — updates once per second, ONLY for the active bubble ───
+  const [timeLabel, setTimeLabel] = useState('0:00');
+  const updateTimeLabel = useCallback(
+    (remaining: number) => setTimeLabel(formatAudioTime(remaining)),
+    [],
+  );
+  const resetTimeLabel = useCallback(() => setTimeLabel('0:00'), []);
 
-  // The overlay width drives the "filled" portion of the waveform.
-  const animatedOverlayStyle = useAnimatedStyle(() => ({
-    width: smoothProgress.value * trackWidthSV.value,
-  }));
-  // The inner row inside the overlay must always span the full track width
-  // so bars line up correctly with the background layer.
+  useAnimatedReaction(
+    () => {
+      const active = audioCtx.activeMessageId.value === messageId;
+      if (!active) return { active: false as const, sec: -1 };
+      const rem = audioCtx.durationSV.value > 0
+        ? Math.max(0, audioCtx.durationSV.value - audioCtx.currentTimeSV.value)
+        : 0;
+      return { active: true as const, sec: Math.floor(rem) };
+    },
+    (curr, prev) => {
+      if (!curr.active) {
+        if (prev?.active) runOnJS(resetTimeLabel)();
+        return;
+      }
+      if (curr.sec !== (prev?.sec ?? -1)) {
+        const rem = audioCtx.durationSV.value - audioCtx.currentTimeSV.value;
+        runOnJS(updateTimeLabel)(Math.max(0, rem));
+      }
+    },
+  );
+
+  // ── Waveform progress overlay (pure UI thread) ────────────────────────
+  const animatedOverlayStyle = useAnimatedStyle(() => {
+    if (audioCtx.activeMessageId.value !== messageId) return { width: 0 };
+    return { width: audioCtx.smoothProgress.value * trackWidthSV.value };
+  });
   const animatedInnerStyle = useAnimatedStyle(() => ({
     width: trackWidthSV.value,
   }));
 
-  const togglePlayback = useCallback(async () => {
-    const s = statusRef.current;
+  const handleToggle = useCallback(() => {
     if (!normalizedUri) return;
-    try {
-      if (s.playing) {
-        player.pause();
-      } else {
-        await AudioModule.setAudioModeAsync({
-          allowsRecording: false,
-          playsInSilentMode: true,
-        });
-        // seekTo is async — await it so play() starts from the correct position.
-        if (s.duration > 0 && s.currentTime >= s.duration - 0.1) {
-          await player.seekTo(0);
-        }
-        player.play();
-      }
-    } catch (err) {
-      console.error('[AudioPlayer] Playback error:', err);
-    }
-  }, [player, normalizedUri]);
+    audioCtx.toggle(messageId, normalizedUri);
+  }, [audioCtx, messageId, normalizedUri]);
 
   const handleSeek = useCallback(
     (evt: { nativeEvent: { locationX: number } }) => {
-      const duration = statusRef.current.duration;
-      if (trackWidthSV.value <= 0 || duration <= 0) return;
+      if (audioCtx.activeMessageId.value !== messageId || trackWidthSV.value <= 0) return;
       const fraction = Math.max(0, Math.min(1, evt.nativeEvent.locationX / trackWidthSV.value));
-      // seekTo is async but we fire-and-forget here (no await needed for seek-on-tap).
-      player.seekTo(fraction * duration);
+      audioCtx.seek(fraction);
     },
-    [player, trackWidthSV],
+    [audioCtx, messageId, trackWidthSV],
   );
-
-  const timeLabel = status.duration > 0
-    ? formatAudioTime(Math.max(0, status.duration - status.currentTime))
-    : '0:00';
   const sentTimeStr = sentAt ? formatSentTime(sentAt) : null;
 
   const iconColor   = isOwn ? colors.audioIconOwn        : colors.audioIconReceived;
@@ -285,16 +311,31 @@ function AudioPlayer({ uri, isOwn, sentAt }: { uri: string; isOwn: boolean; sent
   const barActive   = isOwn ? colors.audioBarActiveOwn   : colors.audioBarActiveReceived;
   const timeColor   = isOwn ? colors.audioTimeOwn        : colors.audioTimeReceived;
 
+  // Memoize the static bar elements — these only change when the waveform
+  // seed or theme colours change, not on every 100ms status tick.
+  const inactiveBars = useMemo(
+    () => waveform.map((h, i) => (
+      <View key={i} style={[styles.waveformBar, { height: Math.round(h * 28), backgroundColor: barInactive }]} />
+    )),
+    [waveform, barInactive],
+  );
+  const activeBars = useMemo(
+    () => waveform.map((h, i) => (
+      <View key={i} style={[styles.waveformBar, { height: Math.round(h * 28), backgroundColor: barActive }]} />
+    )),
+    [waveform, barActive],
+  );
+
   return (
     <View style={styles.audioWrapper}>
       {/* ── Top row: play button + waveform ── */}
       <View style={styles.audioTopRow}>
         <Pressable
-          onPress={togglePlayback}
+          onPress={handleToggle}
           hitSlop={8}
           style={({ pressed }) => [styles.playBtn, pressed && { opacity: 0.7 }]}
         >
-          <Ionicons name={status.playing ? 'pause' : 'play'} size={22} color={iconColor} />
+          <Ionicons name={showPause ? 'pause' : 'play'} size={22} color={iconColor} />
         </Pressable>
 
         {/* Waveform — tappable for seeking */}
@@ -305,22 +346,12 @@ function AudioPlayer({ uri, isOwn, sentAt }: { uri: string; isOwn: boolean; sent
           style={styles.waveformContainer}
         >
           {/* Background (inactive) bars */}
-          {waveform.map((h, i) => (
-            <View
-              key={i}
-              style={[styles.waveformBar, { height: Math.round(h * 28), backgroundColor: barInactive }]}
-            />
-          ))}
+          {inactiveBars}
 
           {/* Foreground (active) bars clipped to animated progress width */}
           <Animated.View style={[styles.waveformOverlay, animatedOverlayStyle]}>
             <Animated.View style={[styles.waveformOverlayInner, animatedInnerStyle]}>
-              {waveform.map((h, i) => (
-                <View
-                  key={i}
-                  style={[styles.waveformBar, { height: Math.round(h * 28), backgroundColor: barActive }]}
-                />
-              ))}
+              {activeBars}
             </Animated.View>
           </Animated.View>
         </Pressable>
@@ -335,93 +366,323 @@ function AudioPlayer({ uri, isOwn, sentAt }: { uri: string; isOwn: boolean; sent
       </View>
     </View>
   );
+});
+
+// ── Translation Section (extracted to isolate animation hooks) ──────────────
+// Owns all translation expand/collapse & TTS state so that own-sent messages
+// (which never show a translation card) never allocate these hooks.
+interface TranslationSectionProps {
+  isOwn: boolean;
+  showMediating: boolean;
+  isOptimistic?: boolean;
+  contentType: string;
+  translations?: Translations | null;
+  preferredLanguage: 'english' | 'singlish' | 'tanglish';
+  confidenceScore?: number | null;
+  messageId: string;
+  onRetry?: (messageId: string) => void;
 }
+
+const TRANSLATION_COLLAPSED_H = 3 * 20; // 3 lines × lineHeight 20
+
+const TranslationSection = memo(function TranslationSection({
+  isOwn,
+  showMediating,
+  isOptimistic,
+  contentType,
+  translations,
+  preferredLanguage,
+  confidenceScore,
+  messageId,
+  onRetry,
+}: TranslationSectionProps) {
+  const { colors } = useTheme();
+
+  // Own messages never show the translation card — early return before hooks is
+  // fine because `isOwn` is stable for the lifetime of this component instance.
+  // However, hooks must always be called in the same order, so we keep them
+  // but they stay idle for own messages (the component simply returns null at
+  // the end).
+
+  // ── Expand/collapse animation ──────────────────────────────────────────
+  const [translationExpanded, setTranslationExpanded] = useState(false);
+  const [translationTruncatable, setTranslationTruncatable] = useState(false);
+  const translationFullHeight = useRef(0);
+  const translationHeight = useSharedValue(TRANSLATION_COLLAPSED_H);
+  const translationChevronAngle = useSharedValue(0);
+  const translationTextStyle = useAnimatedStyle(() => ({
+    maxHeight: translationHeight.value,
+  }));
+  const translationChevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${translationChevronAngle.value}deg` }],
+  }));
+
+  // ── Text-to-Speech for translated audio messages ──────────────────────
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const showListenButton =
+    contentType === 'AUDIO' &&
+    !isOwn &&
+    preferredLanguage === 'english' &&
+    !!translations?.english;
+
+  const handleListenPress = useCallback(() => {
+    if (!translations?.english) return;
+    if (isSpeaking) {
+      Speech.stop();
+      setIsSpeaking(false);
+      return;
+    }
+    setIsSpeaking(true);
+    Speech.speak(translations.english, {
+      language: 'en-US',
+      rate: 0.95,
+      onDone: () => setIsSpeaking(false),
+      onStopped: () => setIsSpeaking(false),
+      onError: () => setIsSpeaking(false),
+    });
+  }, [translations?.english, isSpeaking]);
+
+  useEffect(() => {
+    return () => { Speech.stop(); };
+  }, []);
+
+  // ── Branching renders ─────────────────────────────────────────────────
+  if (isOwn) return null;
+
+  // IMAGE and DOCUMENT messages have no translatable text — suppress both
+  // the mediating indicator and any translation card for these types.
+  if (contentType === 'IMAGE' || contentType === 'DOCUMENT') return null;
+
+  if (showMediating) {
+    return (
+      <View style={styles.mediatingContainer}>
+        <AIMediatingIndicator />
+        {!isOptimistic && onRetry && (
+          <Pressable onPress={() => onRetry(messageId)} hitSlop={8} style={styles.retryBtn}>
+            <Ionicons name="refresh" size={14} color={colors.mediatingColor} />
+          </Pressable>
+        )}
+      </View>
+    );
+  }
+
+  if (!translations) return null;
+
+  const translatedText = translations[preferredLanguage];
+  const score = confidenceScore != null ? Math.round(confidenceScore) : null;
+
+  return (
+    <View style={[
+      styles.translationCard,
+      {
+        backgroundColor: isOwn ? colors.translationBgOwn : colors.translationBg,
+        borderColor: isOwn ? colors.translationBorderOwn : colors.translationBorder,
+      },
+    ]}>
+      {/* Measure the visible text directly via onTextLayout — no hidden duplicate */}
+      <Animated.View style={[translationTextStyle, { overflow: 'hidden' }]}>
+        <Text
+          style={[styles.translationText, { color: colors.translationText }]}
+          onTextLayout={(e) => {
+            const lines = e.nativeEvent.lines;
+            const fullH = lines.reduce((s, l) => s + l.height, 0);
+            const truncatable = lines.length > 3;
+            if (translationFullHeight.current !== fullH) {
+              translationFullHeight.current = fullH;
+            }
+            if (truncatable !== translationTruncatable) {
+              requestAnimationFrame(() => setTranslationTruncatable(truncatable));
+            }
+          }}
+        >
+          {translatedText}
+        </Text>
+      </Animated.View>
+
+      {translationTruncatable && (
+        <Pressable
+          onPress={() => {
+            const next = !translationExpanded;
+            setTranslationExpanded(next);
+            const targetH = next ? translationFullHeight.current : TRANSLATION_COLLAPSED_H;
+            translationHeight.value = withTiming(targetH, {
+              duration: 260,
+              easing: Easing.out(Easing.cubic),
+            });
+            translationChevronAngle.value = withTiming(next ? 180 : 0, { duration: 260 });
+          }}
+          hitSlop={8}
+          style={styles.translationExpandBtn}
+        >
+          <Animated.View style={translationChevronStyle}>
+            <Ionicons name="chevron-down" size={14} color={colors.translationText} />
+          </Animated.View>
+        </Pressable>
+      )}
+
+      <View style={styles.translationFooter}>
+        {showListenButton && (
+          <Pressable
+            onPress={handleListenPress}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.listenBtn,
+              { backgroundColor: isSpeaking ? colors.primaryLight : colors.confidenceBg },
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Ionicons
+              name={isSpeaking ? 'stop-circle' : 'volume-high'}
+              size={13}
+              color={isSpeaking ? '#fff' : colors.primaryLight}
+            />
+            <Text style={[
+              styles.listenText,
+              { color: isSpeaking ? '#fff' : colors.primaryLight },
+            ]}>
+              {isSpeaking ? 'Stop' : 'Listen'}
+            </Text>
+          </Pressable>
+        )}
+
+        {score != null && (
+          <View style={[styles.confidenceBadge, { backgroundColor: colors.confidenceBg }]}>
+            <Text style={[styles.confidenceText, { color: colors.confidenceText }]}>⚡ {score}%</Text>
+          </View>
+        )}
+        {onRetry && (
+          <Pressable onPress={() => onRetry(messageId)} hitSlop={8} style={styles.retryBtn}>
+            <Ionicons name="refresh" size={14} color={colors.primaryLight} />
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
+});
 
 // ── Main Component ───────────────────────────────────────────────────────────
 function MessageBubble({
   message,
   currentUserId,
-  preferredLanguage,
   onRetry,
   onLongPress,
   onPress,
   onOpenDocumentInterrogation,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
-  // Read selectionModeProgress (SharedValue) & highlightedMessageId from
-  // context. The shared value drives animations purely on the UI thread so
-  // entering/exiting selection mode causes zero React re-renders here.
-  const { selectionModeProgress, highlightedMessageId } = useChatList();
-  const isHighlighted = message.id === highlightedMessageId;
+  const { selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage } = useChatList();
 
   const isOwn = message.senderId === currentUserId;
   const { contentType, rawContent, translations, confidenceScore, isOptimistic, isRetrying } = message;
-  const isSelected = message.isSelected ?? false;
 
   const showMediating =
-    isOptimistic === true || isRetrying === true || translations === undefined || translations === null;
+    isOptimistic === true || isRetrying === true || message.isTranslating === true;
 
   // ── Highlight animation (from search navigation) ────────────────────────
+  // Driven entirely on the UI thread via useAnimatedReaction — changing
+  // highlightedMessageId.value never triggers a JS re-render.
   const highlightOpacity = useSharedValue(0);
 
-  useEffect(() => {
-    if (isHighlighted) {
-      highlightOpacity.value = withTiming(1, { duration: 200 });
-      // Auto-fade after 1.5s
-      const timer = setTimeout(() => {
-        highlightOpacity.value = withTiming(0, { duration: 800 });
-      }, 1500);
-      return () => clearTimeout(timer);
-    } else {
-      highlightOpacity.value = 0;
-    }
-  }, [isHighlighted, highlightOpacity]);
+  useAnimatedReaction(
+    () => highlightedMessageId.value === message.id,
+    (isHighlighted, wasHighlighted) => {
+      if (isHighlighted && !wasHighlighted) {
+        highlightOpacity.value = withTiming(1, { duration: 200 });
+        // Auto-fade after 1.5s — using withTiming chain on the UI thread
+        highlightOpacity.value = withSequence(
+          withTiming(1, { duration: 200 }),
+          withTiming(1, { duration: 1500 }), // hold
+          withTiming(0, { duration: 800 }),   // fade out
+        );
+      } else if (!isHighlighted && wasHighlighted) {
+        highlightOpacity.value = withTiming(0, { duration: 200 });
+      }
+    },
+    [message.id],
+  );
 
-  const highlightAnimStyle = useAnimatedStyle(() => ({
-    backgroundColor: interpolateColor(
-      highlightOpacity.value,
-      [0, 1],
-      ['rgba(250,204,21,0)', 'rgba(250,204,21,0.2)'],
-    ),
-    borderRadius: 12,
+  // ── Selection animation (100% UI-thread) ────────────────────────────────
+  const isSelectedSV = useDerivedValue(
+    () => (selectedIdsMap.value[message.id] ? 1 : 0) as number,
+  );
+
+  const selectionProgress = useDerivedValue(() =>
+    withTiming(isSelectedSV.value, { duration: 180 }),
+  );
+
+  const checkScale = useDerivedValue(() =>
+    withTiming(isSelectedSV.value === 1 ? 1 : 0.6, { duration: 160 }),
+  );
+
+  const SELECTION_OFFSET = 28;
+
+  // ── CONSOLIDATED animated styles (3 instead of 8) ─────────────────────
+  // 1. Outer row wrapper: highlight + selection background (uses opacity
+  //    overlay instead of expensive interpolateColor on every frame).
+  const animatedRowWrapperStyle = useAnimatedStyle(() => ({
+    opacity: 1, // keeps the row visible
+    backgroundColor: selectionProgress.value > 0.01
+      ? `rgba(99,102,241,${selectionProgress.value * 0.12})`
+      : 'transparent',
   }));
 
-  // ── Selection animation ─────────────────────────────────────────────────
-  const selectionProgress = useSharedValue(isSelected ? 1 : 0);
-
-  useEffect(() => {
-    selectionProgress.value = withTiming(isSelected ? 1 : 0, { duration: 180 });
-  }, [isSelected, selectionProgress]);
-
-  const animatedRowBgStyle = useAnimatedStyle(() => ({
-    backgroundColor: interpolateColor(
-      selectionProgress.value,
-      [0, 1],
-      [colors.selectionBgOff, colors.selectionBg],
-    ),
-    borderRadius: 10,
+  // 2. Highlight overlay — separate so it doesn't fight with selection
+  const highlightStyle = useAnimatedStyle(() => ({
+    opacity: highlightOpacity.value * 0.2,
   }));
 
-  // ── Checkmark animation (UI-thread only) ─────────────────────────────
-  // checkScale is still per-bubble (driven by isSelected React prop).
-  const checkScale = useSharedValue(isSelected ? 1 : 0.4);
+  // 3. Bubble slide + checkmark combined
+  const animatedBubbleSlide = useAnimatedStyle(() => ({
+    transform: [{ translateX: (isOwn ? -1 : 1) * selectionModeProgress.value * SELECTION_OFFSET }],
+  }));
 
-  useEffect(() => {
-    checkScale.value = withTiming(isSelected ? 1 : 0.6, { duration: 160 });
-  }, [isSelected, checkScale]);
-
-  // selectionModeProgress (0 → 1) comes from context as a stable SharedValue
-  // reference. Reading it inside useAnimatedStyle means the opacity + width
-  // animation runs entirely on the UI thread — no JS re-renders on any bubble
-  // when the user enters or exits selection mode.
   const animatedCheckStyle = useAnimatedStyle(() => ({
     opacity: selectionModeProgress.value,
     transform: [{ scale: checkScale.value }],
-    width: selectionModeProgress.value * 22,
   }));
 
-  // ── Content ────────────────────────────────────────────────────────────
-  const renderContent = () => {
+  // Check icon: rendered purely via animated opacity — no JS boolean bridge.
+  // The checkmark icon is always mounted but invisible via the parent's opacity.
+  // When selected, the background + icon become visible via the parent check style.
+  const checkBgStyle = useAnimatedStyle(() => ({
+    backgroundColor: isSelectedSV.value === 1
+      ? colors.checkCircleActiveBg
+      : colors.checkCircleBg,
+    borderColor: isSelectedSV.value === 1
+      ? colors.checkCircleActiveBorder
+      : colors.checkCircleBorder,
+  }));
+
+  const checkIconStyle = useAnimatedStyle(() => ({
+    opacity: isSelectedSV.value === 1 ? 1 : 0,
+  }));
+
+  // ── Optimistic pulse — only allocate animation for optimistic messages ──
+  const optimisticOpacity = useSharedValue(isOptimistic ? 0.7 : 1);
+  useEffect(() => {
+    if (isOptimistic) {
+      optimisticOpacity.value = withRepeat(
+        withSequence(
+          withTiming(0.85, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+          withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+        ),
+        -1,
+        false,
+      );
+    } else {
+      optimisticOpacity.value = 1;
+    }
+  }, [isOptimistic, optimisticOpacity]);
+
+  // Overwrite the optimistic style only when actually optimistic
+  const optimisticPulseStyle = useAnimatedStyle(() => {
+    if (!isOptimistic) return {};
+    return { opacity: optimisticOpacity.value };
+  });
+
+  // ── Content (memoized to avoid re-creating JSX on unrelated state changes) ─
+  const content = useMemo(() => {
     switch (contentType) {
       case 'TEXT':
         return (
@@ -435,12 +696,14 @@ function MessageBubble({
           <Image
             source={{ uri: rawContent }}
             style={styles.image}
-            resizeMode="cover"
+            contentFit="cover"
+            transition={200}
+            recyclingKey={message.id}
           />
         );
 
       case 'AUDIO':
-        return <AudioPlayer uri={rawContent} isOwn={isOwn} sentAt={message.createdAt} />;
+        return <AudioPlayer uri={rawContent} isOwn={isOwn} sentAt={message.createdAt} messageId={message.id} />;
 
       case 'DOCUMENT':
         return (
@@ -460,179 +723,7 @@ function MessageBubble({
       default:
         return null;
     }
-  };
-
-  // ── Translation expand/collapse ──────────────────────────────────────
-  const TRANSLATION_COLLAPSED_H = 3 * 20; // 3 lines × lineHeight 20
-  const [translationExpanded, setTranslationExpanded] = useState(false);
-  const [translationTruncatable, setTranslationTruncatable] = useState(false);
-  const translationFullHeight = useRef(0);
-  const translationHeight = useSharedValue(TRANSLATION_COLLAPSED_H);
-  const translationChevronAngle = useSharedValue(0);
-  const translationTextStyle = useAnimatedStyle(() => ({
-    maxHeight: translationHeight.value,
-  }));
-  const translationChevronStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${translationChevronAngle.value}deg` }],
-  }));
-
-  // ── Text-to-Speech for translated audio messages ──────────────────────
-  const [isSpeaking, setIsSpeaking] = useState(false);
-
-  /** Whether this message qualifies for the "Listen" TTS button:
-   *  - It's an AUDIO message (voice recording)
-   *  - It's a received message (not own)
-   *  - The user's preferred language is English
-   *  - Translations are available */
-  const showListenButton =
-    contentType === 'AUDIO' &&
-    !isOwn &&
-    preferredLanguage === 'english' &&
-    !!translations?.english;
-
-  const handleListenPress = useCallback(() => {
-    if (!translations?.english) return;
-
-    if (isSpeaking) {
-      Speech.stop();
-      setIsSpeaking(false);
-      return;
-    }
-
-    setIsSpeaking(true);
-    Speech.speak(translations.english, {
-      language: 'en-US',
-      rate: 0.95,
-      onDone: () => setIsSpeaking(false),
-      onStopped: () => setIsSpeaking(false),
-      onError: () => setIsSpeaking(false),
-    });
-  }, [translations?.english, isSpeaking]);
-
-  // Stop TTS when the component unmounts
-  useEffect(() => {
-    return () => {
-      Speech.stop();
-    };
-  }, []);
-
-  // ── Translation Card ──────────────────────────────────────────────────
-  const renderTranslation = () => {
-    // Own messages never show the translation card — you already know what you wrote.
-    if (isOwn) return null;
-
-    if (showMediating) {
-      return (
-        <View style={styles.mediatingContainer}>
-          <AIMediatingIndicator />
-          {/* Allow manual retry when the message is not optimistic (already persisted) */}
-          {!isOptimistic && onRetry && (
-            <Pressable onPress={() => onRetry(message.id)} hitSlop={8} style={styles.retryBtn}>
-              <Ionicons name="refresh" size={14} color={colors.mediatingColor} />
-            </Pressable>
-          )}
-        </View>
-      );
-    }
-
-    if (!translations) return null;
-
-    const translatedText = translations[preferredLanguage];
-    const score =
-      confidenceScore != null ? Math.round(confidenceScore) : null;
-
-    return (
-      <View style={[
-        styles.translationCard,
-        {
-          backgroundColor: isOwn ? colors.translationBgOwn : colors.translationBg,
-          borderColor: isOwn ? colors.translationBorderOwn : colors.translationBorder,
-        },
-      ]}>
-        {/* Invisible measurement text — detects overflow and stores full pixel height */}
-        <View style={styles.translationMeasureWrapper}>
-          <Text
-            style={styles.translationText}
-            onTextLayout={(e) => {
-              const lines = e.nativeEvent.lines;
-              translationFullHeight.current = lines.reduce((s, l) => s + l.height, 0);
-              setTranslationTruncatable(lines.length > 3);
-            }}
-          >
-            {translatedText}
-          </Text>
-        </View>
-
-        {/* Animated clipping container — height smoothly transitions between
-             collapsed (3 lines) and the measured full height */}
-        <Animated.View style={[translationTextStyle, { overflow: 'hidden' }]}>
-          <Text style={[styles.translationText, { color: colors.translationText }]}>
-            {translatedText}
-          </Text>
-        </Animated.View>
-
-        {/* Chevron toggle — only shown when text overflows 3 lines */}
-        {translationTruncatable && (
-          <Pressable
-            onPress={() => {
-              const next = !translationExpanded;
-              setTranslationExpanded(next);
-              const targetH = next ? translationFullHeight.current : TRANSLATION_COLLAPSED_H;
-              translationHeight.value = withTiming(targetH, {
-                duration: 260,
-                easing: Easing.out(Easing.cubic),
-              });
-              translationChevronAngle.value = withTiming(next ? 180 : 0, { duration: 260 });
-            }}
-            hitSlop={8}
-            style={styles.translationExpandBtn}
-          >
-            <Animated.View style={translationChevronStyle}>
-              <Ionicons name="chevron-down" size={14} color={colors.translationText} />
-            </Animated.View>
-          </Pressable>
-        )}
-
-        <View style={styles.translationFooter}>
-          {/* 🔊 Listen button — TTS for translated audio messages */}
-          {showListenButton && (
-            <Pressable
-              onPress={handleListenPress}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.listenBtn,
-                { backgroundColor: isSpeaking ? colors.primaryLight : colors.confidenceBg },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons
-                name={isSpeaking ? 'stop-circle' : 'volume-high'}
-                size={13}
-                color={isSpeaking ? '#fff' : colors.primaryLight}
-              />
-              <Text style={[
-                styles.listenText,
-                { color: isSpeaking ? '#fff' : colors.primaryLight },
-              ]}>
-                {isSpeaking ? 'Stop' : 'Listen'}
-              </Text>
-            </Pressable>
-          )}
-
-          {score != null && (
-            <View style={[styles.confidenceBadge, { backgroundColor: colors.confidenceBg }]}>
-              <Text style={[styles.confidenceText, { color: colors.confidenceText }]}>⚡ {score}%</Text>
-            </View>
-          )}
-          {onRetry && (
-            <Pressable onPress={() => onRetry(message.id)} hitSlop={8} style={styles.retryBtn}>
-              <Ionicons name="refresh" size={14} color={colors.primaryLight} />
-            </Pressable>
-          )}
-        </View>
-      </View>
-    );
-  };
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, colors.bubbleOwnText, colors.bubbleReceivedText, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -641,52 +732,40 @@ function MessageBubble({
     if (selectionModeProgress.value > 0.5) onPress?.(message.id);
   }, [selectionModeProgress, message.id, onPress]);
 
-  // ── Optimistic bubble pulse (alive "sending" feel) ───────────────────
-  const optimisticOpacity = useSharedValue(isOptimistic ? 0.7 : 1);
-  useEffect(() => {
-    if (isOptimistic) {
-      optimisticOpacity.value = withRepeat(
-        withSequence(
-          withTiming(0.85, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-          withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-        ),
-        -1,
-        false,
-      );
-    } else {
-      optimisticOpacity.value = withTiming(1, { duration: 200 });
-    }
-  }, [isOptimistic, optimisticOpacity]);
-  const optimisticAnimStyle = useAnimatedStyle(() => ({
-    opacity: optimisticOpacity.value,
-  }));
+  // Stable long-press handler — avoids inline closure recreation.
+  const handleLongPressLocal = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    onLongPress?.(message.id);
+  }, [onLongPress, message.id]);
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <Pressable
-      onLongPress={() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        onLongPress?.(message.id);
-      }}
+      onLongPress={handleLongPressLocal}
       onPress={handleTap}
       delayLongPress={300}
     >
-      <Animated.View style={[styles.rowWrapper, animatedRowBgStyle, highlightAnimStyle]}>
-        <View style={[styles.row, isOwn ? styles.rowOwn : styles.rowOther]}>
-          {/* ── Selection checkmark (left for others, right for own is reversed via row) ── */}
-          <Animated.View style={[styles.checkCircle, animatedCheckStyle]}>
-            <View style={[
-              styles.checkCircleInner,
-              { borderColor: colors.checkCircleBorder, backgroundColor: colors.checkCircleBg },
-              isSelected && { backgroundColor: colors.checkCircleActiveBg, borderColor: colors.checkCircleActiveBorder },
-            ]}>
-              {isSelected && (
-                <Ionicons name="checkmark" size={13} color="#fff" />
-              )}
-            </View>
-          </Animated.View>
+      <Animated.View style={[styles.rowWrapper, animatedRowWrapperStyle]}>
+        {/* Highlight overlay — absolutely positioned, cheap opacity-only anim */}
+        <Animated.View style={[StyleSheet.absoluteFill, styles.highlightOverlay, highlightStyle]} />
 
-          {/* ── Bubble + edited label + translation card ── */}
+        {/* Checkmark — always mounted, visibility via parent animated opacity */}
+        <Animated.View style={[
+          styles.checkCircle,
+          isOwn ? styles.checkCircleOwn : styles.checkCircleOther,
+          animatedCheckStyle,
+        ]}>
+          <Animated.View style={[
+            styles.checkCircleInner,
+            checkBgStyle,
+          ]}>
+            <Animated.View style={checkIconStyle}>
+              <Ionicons name="checkmark" size={13} color="#fff" />
+            </Animated.View>
+          </Animated.View>
+        </Animated.View>
+
+        <Animated.View style={[styles.row, isOwn ? styles.rowOwn : styles.rowOther, animatedBubbleSlide]}>
           <View style={styles.bubbleColumn}>
             <Animated.View
               style={[
@@ -696,10 +775,10 @@ function MessageBubble({
                   shadowColor: colors.bubbleShadow,
                 },
                 isOwn ? styles.bubbleOwn : styles.bubbleOther,
-                optimisticAnimStyle,
+                isOptimistic ? optimisticPulseStyle : undefined,
               ]}
             >
-              {renderContent()}
+              {content}
             </Animated.View>
 
             {/* "edited" label — shown for all participants once a message is edited */}
@@ -709,22 +788,57 @@ function MessageBubble({
               </Text>
             )}
 
-            {/* Translation card is inside bubbleColumn so it is constrained
-                to the same width as the bubble, not span the full screen. */}
-            {renderTranslation()}
+            {/* Translation card */}
+            <TranslationSection
+              isOwn={isOwn}
+              showMediating={showMediating}
+              isOptimistic={isOptimistic}
+              contentType={contentType}
+              translations={translations}
+              preferredLanguage={preferredLanguage}
+              confidenceScore={confidenceScore}
+              messageId={message.id}
+              onRetry={onRetry}
+            />
 
             {/* Action cards — meetings, reminders extracted by AI */}
             {message.extractedActions && message.extractedActions.length > 0 && (
               <ActionCard actions={message.extractedActions} isOwn={isOwn} />
             )}
           </View>
-        </View>
+        </Animated.View>
       </Animated.View>
     </Pressable>
   );
 }
 
-export default memo(MessageBubble);
+// ── Custom memo comparator ───────────────────────────────────────────────────
+// React.memo's default shallow comparison fails for the `message` object because
+// every setMessages() creates new references. This deep-compares only the fields
+// that actually affect rendering, preventing unnecessary re-renders during scroll.
+function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
+  const pm = prev.message;
+  const nm = next.message;
+  return (
+    pm.id === nm.id &&
+    pm.rawContent === nm.rawContent &&
+    pm.contentType === nm.contentType &&
+    pm.senderId === nm.senderId &&
+    pm.isOptimistic === nm.isOptimistic &&
+    pm.isRetrying === nm.isRetrying &&
+    pm.isEdited === nm.isEdited &&
+    pm.confidenceScore === nm.confidenceScore &&
+    pm.translations === nm.translations &&
+    pm.extractedActions === nm.extractedActions &&
+    prev.currentUserId === next.currentUserId &&
+    prev.onRetry === next.onRetry &&
+    prev.onLongPress === next.onLongPress &&
+    prev.onPress === next.onPress &&
+    prev.onOpenDocumentInterrogation === next.onOpenDocumentInterrogation
+  );
+}
+
+export default memo(MessageBubble, arePropsEqual);
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 const BUBBLE_MAX_WIDTH = '78%' as const;
@@ -734,6 +848,13 @@ const styles = StyleSheet.create({
   rowWrapper: {
     paddingHorizontal: 6,
     paddingVertical: 2,
+    borderRadius: 10,
+  },
+
+  // Highlight overlay — a cheap absolute fill with fixed bg color
+  highlightOverlay: {
+    backgroundColor: 'rgba(250,204,21,1)',
+    borderRadius: 12,
   },
 
   // Row alignment
@@ -752,13 +873,21 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
 
-  // Selection checkmark circle
   checkCircle: {
+    width: 22,
     height: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    flexShrink: 0,
-    overflow: 'hidden',
+  },
+  checkCircleOther: {
+    position: 'absolute',
+    left: 6,
+    bottom: 4,
+  },
+  checkCircleOwn: {
+    position: 'absolute',
+    right: 6,
+    bottom: 4,
   },
   checkCircleInner: {
     width: 20,
@@ -907,10 +1036,6 @@ const styles = StyleSheet.create({
   translationText: {
     fontSize: 14,
     lineHeight: 20,
-  },
-  translationMeasureWrapper: {
-    height: 0,
-    overflow: 'hidden',
   },
   translationExpandBtn: {
     alignSelf: 'center',

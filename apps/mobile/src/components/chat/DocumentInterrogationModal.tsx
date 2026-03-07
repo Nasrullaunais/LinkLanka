@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import WebView from 'react-native-webview';
 import {
   askDocumentQuestion,
+  API_BASE_URL,
   type QAChatTurn,
   type QACitation,
 } from '../../services/api';
@@ -71,6 +72,20 @@ function extractOrigin(url: string): string {
   // e.g. "http://192.168.1.5:3000/media/uploads/doc.pdf" → "http://192.168.1.5:3000"
   const match = url.match(/^(https?:\/\/[^/]+)/);
   return match ? match[1] : '';
+}
+
+/**
+ * Rewrite the origin of a stored file URL to match the currently-configured
+ * API base URL. Handles cases where the URL was stored with a different IP
+ * (e.g. localhost, old network IP) than the device can currently reach.
+ */
+function normalizeFileUrl(url: string): string {
+  const storedOrigin = extractOrigin(url);
+  const currentOrigin = extractOrigin(API_BASE_URL);
+  if (!storedOrigin || !currentOrigin || storedOrigin === currentOrigin) {
+    return url;
+  }
+  return url.replace(storedOrigin, currentOrigin);
 }
 
 // ── PDF.js WebView HTML builder ──────────────────────────────────────────────
@@ -207,11 +222,7 @@ export default function DocumentInterrogationModal({
       const updated = [...nextMessages, aiMsg];
       setQaMessages(updated);
       persistHistory(updated);
-
-      // Scroll to bottom
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+      // onContentSizeChange on the FlatList handles scrolling to bottom
     } catch {
       const errorMsg: QAMessage = {
         id: generateId(),
@@ -321,7 +332,8 @@ export default function DocumentInterrogationModal({
     [goToPage, colors],
   );
 
-  const filename = extractFilename(fileUrl);
+  const resolvedFileUrl = normalizeFileUrl(fileUrl);
+  const filename = extractFilename(resolvedFileUrl);
 
   return (
     <Modal
@@ -365,7 +377,7 @@ export default function DocumentInterrogationModal({
           ) : (
             <WebView
               ref={webViewRef}
-              source={{ html: buildPdfViewerHtml(fileUrl), baseUrl: extractOrigin(fileUrl) }}
+              source={{ html: buildPdfViewerHtml(resolvedFileUrl), baseUrl: extractOrigin(resolvedFileUrl) }}
               originWhitelist={['*']}
               javaScriptEnabled
               mixedContentMode="always"
@@ -399,6 +411,9 @@ export default function DocumentInterrogationModal({
               keyExtractor={(item) => item.id}
               renderItem={renderQAMessage}
               contentContainerStyle={styles.chatList}
+              removeClippedSubviews
+              initialNumToRender={10}
+              windowSize={5}
               onContentSizeChange={() =>
                 flatListRef.current?.scrollToEnd({ animated: true })
               }

@@ -35,16 +35,40 @@ export class ChatController {
   ) {}
 
   @Get('groups/:groupId/messages')
-  getGroupMessages(
+  async getGroupMessages(
     @Param('groupId') groupId: string,
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '50',
+    @Query('before') before?: string,
+    @Request() req?: AuthRequest,
   ): Promise<Message[]> {
+    const isMember = await this.groupsService.isMember(groupId, req!.user.sub);
+    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
+
+    // If a cursor is provided, use cursor-based pagination (infinite scroll)
+    if (before) {
+      return this.chatService.getCursorHistory(
+        groupId,
+        before,
+        parseInt(limit, 10) || 30,
+      );
+    }
+
     return this.chatService.getPaginatedHistory(
       groupId,
       parseInt(page, 10) || 1,
       parseInt(limit, 10) || 50,
     );
+  }
+
+  @Get('groups/:groupId/messages/all')
+  async getAllGroupMessages(
+    @Param('groupId') groupId: string,
+    @Request() req?: AuthRequest,
+  ): Promise<Message[]> {
+    const isMember = await this.groupsService.isMember(groupId, req!.user.sub);
+    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
+    return this.chatService.getAllMessages(groupId);
   }
 
   @Post('messages/:messageId/retranslate')

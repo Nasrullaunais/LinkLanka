@@ -80,7 +80,23 @@ export interface CurrentUser {
   createdAt: string;
   profilePictureUrl: string | null;
 }
+export interface GroupMemberUser {
+  id: string;
+  displayName: string;
+  nativeDialect: string;
+  profilePictureUrl: string | null;
+  email: string;
+}
 
+export interface GroupMemberItem {
+  id: string;
+  groupId: string;
+  userId: string;
+  role: 'ADMIN' | 'MEMBER';
+  preferredLanguage: string | null;
+  joinedAt: string;
+  user: GroupMemberUser | null;
+}
 // ── Groups ───────────────────────────────────────────────────────────────────
 
 export async function fetchGroups(): Promise<GroupItem[]> {
@@ -109,7 +125,32 @@ export async function setLanguagePreference(
 ): Promise<void> {
   await apiClient.patch(`/groups/${groupId}/language`, { language });
 }
+/** Fetch all members of a group with their profile data and roles. */
+export async function fetchGroupMembers(groupId: string): Promise<GroupMemberItem[]> {
+  const { data } = await apiClient.get<GroupMemberItem[]>(`/groups/${groupId}/members`);
+  return data;
+}
 
+/** Add a user to a group. Any existing member can call this. */
+export async function addGroupMember(groupId: string, userId: string): Promise<void> {
+  await apiClient.post(`/groups/${groupId}/members`, { userId });
+}
+
+/** Leave a group by removing yourself from the member list. */
+export async function leaveGroup(groupId: string, currentUserId: string): Promise<void> {
+  await apiClient.delete(`/groups/${groupId}/members/${currentUserId}`);
+}
+
+/** Update group details. Any member can call this. */
+export async function updateGroupName(groupId: string, name: string): Promise<void> {
+  await apiClient.patch(`/groups/${groupId}`, { name });
+}
+
+/** Fetch a user's public profile by ID. */
+export async function fetchUserById(userId: string): Promise<CurrentUser> {
+  const { data } = await apiClient.get<CurrentUser>(`/users/${userId}`);
+  return data;
+}
 // ── Users ────────────────────────────────────────────────────────────────────
 
 export async function fetchCurrentUser(): Promise<CurrentUser> {
@@ -211,13 +252,6 @@ export async function retranslateMessage(messageId: string): Promise<Translation
 export interface AudioProcessResult {
   success: true;
   messageId: string;
-  transcription: string | null;
-  translations: {
-    english: string;
-    singlish: string;
-    tanglish: string;
-  } | null;
-  confidenceScore: number;
 }
 
 /**
@@ -236,6 +270,7 @@ export async function processAudio(
     groupId,
     audioBase64,
     audioMimeType,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
   return data;
 }

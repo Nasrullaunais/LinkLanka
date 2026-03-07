@@ -68,6 +68,8 @@ interface TranslateIntentPayload {
   targetLanguages?: string[];
   chatHistory: ChatTurn[];
   userDictionary: string;
+  /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
+  timezone?: string;
 }
 
 @Injectable()
@@ -111,7 +113,9 @@ Always use terms which commonly used and easily understood by users. dont use ne
 ACTION EXTRACTION — In addition to translating, analyze the intent of the message.
 If it contains a clear, actionable request for a meeting, deadline, study session (kuppiya), or reminder, extract structured data into the "extractedActions" array.
 Rules:
-- Only extract when there is a CLEAR intent — do not hallucinate actions from casual conversation.
+- CRITICAL: Only extract actions when there is an EXPLICIT, UNAMBIGUOUS intent stated in clear speech. NEVER hallucinate or infer actions that were not explicitly spoken.
+- If the audio quality is poor, unclear, or you are not 90%+ confident about the spoken content, do NOT extract any actions — return an empty array.
+- Do NOT extract actions from background noise, mumbling, or unclear speech.
 - "type" is MEETING for group events, study sessions, calls, hangouts. REMINDER for personal tasks, deadlines, todos.
 - "title" should be concise and descriptive in English (e.g. "Database kuppiya session").
 - "timestamp" must be a valid ISO 8601 datetime. Use today's date (${new Date().toISOString().split('T')[0]}) and current time (${new Date().toISOString()}) as reference for relative phrases like "tomorrow", "tonight", "next Monday", "day after tomorrow".
@@ -144,9 +148,13 @@ Examples of messages WITHOUT actions:
       const isAudioFile = (payload.fileMimeType ?? '').startsWith('audio/');
       const promptText = isAudioFile
         ? 'Transcribe this audio in its native dialect, then translate the intent. ' +
-          'IMPORTANT: If the audio is completely silent, inaudible, too quiet, or contains no recognizable speech, ' +
-          'you MUST set the "transcription" field to an empty string "" and "confidenceScore" to 0. ' +
-          'Do NOT hallucinate words or guess content from inaudible recordings.'
+          'CRITICAL SILENCE / INAUDIBILITY RULES (you MUST follow these strictly):\n' +
+          '1. If the audio is silent, near-silent, contains only background noise, breathing, wind, or static — ' +
+          'set "transcription" to "" (empty string), "confidenceScore" to 0, and "extractedActions" to [].\n' +
+          '2. Do NOT invent, guess, or hallucinate words, sentences, meetings, reminders, or calendar events that are not CLEARLY and UNMISTAKABLY spoken in the audio.\n' +
+          '3. If you are less than 80% confident that you can hear real, intelligible human speech, treat it as inaudible: transcription="", confidenceScore=0.\n' +
+          '4. NEVER extract actions (meetings, reminders, deadlines) unless the speech is clearly audible AND explicitly mentions a specific event or task. Random background noise is NOT speech.\n' +
+          '5. It is ALWAYS better to return an empty transcription than to hallucinate content that was not actually said.'
         : 'Read this media. If it is an image/document, extract the text (OCR). Then translate the intent.' +
           (payload.rawText ? ' User context: ' + payload.rawText : '');
       finalHumanMessage = new HumanMessage({

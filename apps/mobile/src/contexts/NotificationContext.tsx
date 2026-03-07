@@ -84,15 +84,29 @@ export function NotificationProvider({
   }, []);
 
   // ── 1. Create the Android notification channel ──────────────────────────
+  //
+  // Android locks channel properties (including sound) after first creation.
+  // We delete any old channel versions first so the new channel is always
+  // created fresh with the correct settings.
   useEffect(() => {
     if (Platform.OS === 'android') {
-      Notifications.setNotificationChannelAsync('chat-messages', {
-        name: 'Chat Messages',
-        importance: Notifications.AndroidImportance.MAX,
-        sound: 'default',
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#1A8AE5',
-      }).catch(console.error);
+      (async () => {
+        try {
+          // Remove the old channel (no-op if it doesn't exist)
+          await Notifications.deleteNotificationChannelAsync('chat-messages');
+        } catch {
+          // Ignore — channel may not exist yet
+        }
+        await Notifications.setNotificationChannelAsync('chat-messages-v2', {
+          name: 'Chat Messages',
+          importance: Notifications.AndroidImportance.MAX,
+          sound: 'default',
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#1A8AE5',
+          enableVibrate: true,
+          enableLights: true,
+        }).catch(console.error);
+      })();
     }
   }, []);
 

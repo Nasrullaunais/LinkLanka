@@ -2,7 +2,6 @@ import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Image as Compressor } from 'react-native-compressor';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,9 +24,9 @@ import type { AppStackParamList } from '../navigation/types';
 type Props = NativeStackScreenProps<AppStackParamList, 'Profile'>;
 
 const DIALECTS = [
-  { key: 'singlish', label: '🇱🇰 Singlish' },
-  { key: 'tanglish', label: '🇱🇰 Tanglish' },
-  { key: 'english', label: '🌐 English' },
+  { key: 'singlish', label: 'Singlish' },
+  { key: 'tanglish', label: 'Tanglish' },
+  { key: 'english', label: 'English' },
 ] as const;
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ export default function ProfileScreen({ navigation }: Props) {
               <ActivityIndicator color="#fff" />
             </View>
           ) : userProfilePicture ? (
-            <Image source={{ uri: userProfilePicture }} style={styles.avatar} />
+            <Image source={{ uri: userProfilePicture }} style={styles.avatar} contentFit="cover" transition={200} />
           ) : (
             <View style={[styles.avatar, { backgroundColor: colors.avatarFallbackBg }]}>
               <Ionicons name="person" size={48} color="#fff" />

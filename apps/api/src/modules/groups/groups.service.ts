@@ -94,7 +94,12 @@ export class GroupsService {
           if (otherMember) {
             const peer = await this.userRepo.findOne({
               where: { id: otherMember.userId },
-              select: ['id', 'displayName', 'nativeDialect', 'profilePictureUrl'],
+              select: [
+                'id',
+                'displayName',
+                'nativeDialect',
+                'profilePictureUrl',
+              ],
             });
             if (peer) {
               otherUser = {
@@ -146,7 +151,9 @@ export class GroupsService {
       }),
     );
 
-    const uniqueMembers = [...new Set(memberIds)].filter((id) => id !== creatorId);
+    const uniqueMembers = [...new Set(memberIds)].filter(
+      (id) => id !== creatorId,
+    );
     for (const memberId of uniqueMembers) {
       await this.groupMemberRepo.save(
         this.groupMemberRepo.create({
@@ -220,7 +227,13 @@ export class GroupsService {
       members.map(async (m) => {
         const user = await this.userRepo.findOne({
           where: { id: m.userId },
-          select: ['id', 'displayName', 'nativeDialect', 'profilePictureUrl', 'expoPushToken'],
+          select: [
+            'id',
+            'displayName',
+            'nativeDialect',
+            'profilePictureUrl',
+            'email',
+          ],
         });
         return { ...m, user } as GroupMember & { user: Partial<User> | null };
       }),
@@ -235,7 +248,11 @@ export class GroupsService {
     const group = await this.chatGroupRepo.findOne({ where: { id: groupId } });
     if (!group) throw new NotFoundException('Group not found');
 
-    await this.assertAdmin(groupId, requesterId);
+    const isMemberCheck = await this.isMember(groupId, requesterId);
+
+    if (!isMemberCheck) {
+      throw new ForbiddenException('You must be a member of this group');
+    }
 
     const existing = await this.groupMemberRepo.findOne({
       where: { groupId, userId: newMemberId },
@@ -263,6 +280,24 @@ export class GroupsService {
     await this.groupMemberRepo.delete({ groupId, userId: targetUserId });
   }
 
+  async updateGroup(
+    groupId: string,
+    requesterId: string,
+    dto: { name?: string },
+  ): Promise<ChatGroup> {
+    const isMember = await this.isMember(groupId, requesterId);
+
+    if (!isMember) {
+      throw new ForbiddenException('You must be a member of this group');
+    }
+
+    const group = await this.chatGroupRepo.findOne({ where: { id: groupId } });
+    if (!group) throw new NotFoundException('Group not found');
+
+    if (dto.name !== undefined) group.name = dto.name;
+    return this.chatGroupRepo.save(group);
+  }
+
   async isMember(groupId: string, userId: string): Promise<boolean> {
     const member = await this.groupMemberRepo.findOne({
       where: { groupId, userId },
@@ -279,7 +314,8 @@ export class GroupsService {
     const membership = await this.groupMemberRepo.findOne({
       where: { groupId, userId },
     });
-    if (!membership) throw new NotFoundException('You are not a member of this group');
+    if (!membership)
+      throw new NotFoundException('You are not a member of this group');
 
     membership.preferredLanguage = language;
     await this.groupMemberRepo.save(membership);
@@ -290,7 +326,14 @@ export class GroupsService {
   async getUserById(userId: string): Promise<Omit<User, 'passwordHash'>> {
     const user = await this.userRepo.findOne({
       where: { id: userId },
-      select: ['id', 'displayName', 'nativeDialect', 'email', 'createdAt', 'profilePictureUrl', 'expoPushToken'],
+      select: [
+        'id',
+        'displayName',
+        'nativeDialect',
+        'email',
+        'createdAt',
+        'profilePictureUrl',
+      ],
     });
     if (!user) throw new NotFoundException('User not found');
     return user;
@@ -305,7 +348,8 @@ export class GroupsService {
 
     if (dto.displayName !== undefined) user.displayName = dto.displayName;
     if (dto.nativeDialect !== undefined) user.nativeDialect = dto.nativeDialect;
-    if (dto.profilePictureUrl !== undefined) user.profilePictureUrl = dto.profilePictureUrl;
+    if (dto.profilePictureUrl !== undefined)
+      user.profilePictureUrl = dto.profilePictureUrl;
 
     await this.userRepo.save(user);
     return this.getUserById(userId);
@@ -326,6 +370,46 @@ export class GroupsService {
     });
 
     return users.filter((u) => u.id !== currentUserId);
+  }
+
+  // ── Push token access (server-side only, never exposed via API) ────────────
+
+  /**
+   * Fetch a single user's Expo push token. Returns null if the user
+   * doesn't exist or has no token registered.
+   */
+  async getExpoPushToken(userId: string): Promise<string | null> {
+    const user = await this.userRepo.findOne({
+      where: { id: userId },
+      select: ['expoPushToken'],
+    });
+    return user?.expoPushToken ?? null;
+  }
+
+  /**
+   * Fetch members with their push tokens for server-side notification dispatch.
+   * MUST NOT be exposed through any API response.
+   */
+  async findMembersWithTokens(
+    groupId: string,
+  ): Promise<Array<GroupMember & { user: Partial<User> | null }>> {
+    const members = await this.groupMemberRepo.find({ where: { groupId } });
+
+    return Promise.all(
+      members.map(async (m) => {
+        const user = await this.userRepo.findOne({
+          where: { id: m.userId },
+          select: [
+            'id',
+            'displayName',
+            'nativeDialect',
+            'profilePictureUrl',
+            'expoPushToken',
+          ],
+        });
+        return { ...m, user } as GroupMember & { user: Partial<User> | null };
+      }),
+    );
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

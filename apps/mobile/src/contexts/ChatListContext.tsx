@@ -1,36 +1,30 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import type { SharedValue } from 'react-native-reanimated';
 
-/**
- * Lightweight context that lets individual `MessageBubble` components
- * animate in response to selection mode **without any React re-renders**.
- *
- * `selectionModeProgress` is a Reanimated SharedValue<number> (0 = off,
- * 1 = on) created once in ChatScreen and passed down here. Because the
- * SharedValue *object reference* is stable, the context value never
- * changes when the user enters or exits selection mode — each bubble's
- * `useAnimatedStyle` reacts to the value change directly on the UI thread.
- *
- * Only `highlightedMessageId` changes (rare — search navigation) cause
- * a React context update and re-render.
- */
+type PreferredLanguage = 'english' | 'singlish' | 'tanglish';
+
 interface ChatListContextType {
   selectionModeProgress: SharedValue<number>;
-  highlightedMessageId: string | null;
+  selectedIdsMap: SharedValue<Record<string, boolean>>;
+  /** SharedValue so highlight changes drive UI-thread animations without JS re-renders. */
+  highlightedMessageId: SharedValue<string | null>;
+  preferredLanguage: PreferredLanguage;
 }
 
 const ChatListContext = createContext<ChatListContextType | null>(null);
 
 export function ChatListProvider({
   selectionModeProgress,
+  selectedIdsMap,
   highlightedMessageId,
+  preferredLanguage,
   children,
 }: ChatListContextType & { children: React.ReactNode }) {
   const value = useMemo(
-    () => ({ selectionModeProgress, highlightedMessageId }),
-    // selectionModeProgress is a stable object reference — its .value
-    // changing does NOT recreate this memo or re-render subscribers.
-    [selectionModeProgress, highlightedMessageId],
+    () => ({ selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage }),
+    // selectionModeProgress, selectedIdsMap & highlightedMessageId are stable
+    // SharedValue references — their .value changing does NOT recreate this memo.
+    [selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage],
   );
 
   return (

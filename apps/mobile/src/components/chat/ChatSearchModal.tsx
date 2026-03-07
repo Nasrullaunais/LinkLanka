@@ -418,6 +418,10 @@ export default function ChatSearchModal({
           keyboardDismissMode="on-drag"
           onEndReached={handleLoadMore}
           onEndReachedThreshold={0.4}
+          removeClippedSubviews
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={7}
           ListFooterComponent={
             isLoading && results.length > 0 ? (
               <View style={styles.footer}>

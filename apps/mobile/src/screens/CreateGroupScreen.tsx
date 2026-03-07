@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -104,6 +104,99 @@ export default function CreateGroupScreen({ navigation }: Props) {
   }, [groupName, selectedUsers, navigation]);
 
   // ── Render ───────────────────────────────────────────────────────────────
+  const isSearchActive = memberSearch.trim().length > 0;
+
+  const renderUserItem = useCallback(
+    ({ item: user }: { item: UserItem }) => {
+      const isSelected = selectedUsers.some((s) => s.id === user.id);
+      return (
+        <Pressable
+          onPress={() => toggleUser(user)}
+          style={({ pressed }) => [
+            styles.userRow,
+            { backgroundColor: colors.surfaceElevated, borderBottomColor: colors.rowBorder },
+            pressed && { backgroundColor: colors.rowPressed },
+          ]}
+        >
+          <View style={[styles.userAvatar, { backgroundColor: colors.avatarFallbackBg }]}>
+            <Ionicons name="person" size={20} color="#fff" />
+          </View>
+          <View style={styles.userInfo}>
+            <Text style={[styles.userName, { color: colors.text }]}>{user.displayName}</Text>
+            <Text style={[styles.userDialect, { color: colors.textTertiary }]}>{user.nativeDialect}</Text>
+          </View>
+          <View style={[styles.checkbox, { borderColor: colors.border }, isSelected && { backgroundColor: colors.primary, borderColor: colors.primary }]}>
+            {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+          </View>
+        </Pressable>
+      );
+    },
+    [toggleUser, selectedUsers, colors],
+  );
+
+  const listHeader = useMemo(() => (
+    <View style={styles.body}>
+      {/* Error */}
+      {error ? <Text style={[styles.errorText, { color: colors.destructive }]}>{error}</Text> : null}
+
+      {/* Group name */}
+      <Text style={[styles.label, { color: colors.modalText }]}>Group Name</Text>
+      <TextInput
+        style={[styles.nameInput, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.inputBg }]}
+        placeholder="e.g. Friends, Work Team…"
+        placeholderTextColor={colors.inputPlaceholder}
+        value={groupName}
+        onChangeText={(t) => { setGroupName(t); setError(''); }}
+        maxLength={60}
+        returnKeyType="next"
+      />
+
+      {/* Selected members pills */}
+      {selectedUsers.length > 0 && (
+        <>
+          <Text style={[styles.label, { color: colors.modalText }]}>Members ({selectedUsers.length})</Text>
+          <View style={styles.pills}>
+            {selectedUsers.map((user) => (
+              <Pressable
+                key={user.id}
+                onPress={() => toggleUser(user)}
+                style={[styles.pill, { backgroundColor: colors.primaryFaded, borderColor: colors.primaryLight }]}
+              >
+                <Text style={[styles.pillText, { color: colors.primary }]}>{user.displayName}</Text>
+                <Ionicons name="close-circle" size={14} color={colors.primary} />
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+
+      {/* User search */}
+      <Text style={[styles.label, { color: colors.modalText }]}>Add Members</Text>
+      <View style={[styles.searchBar, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
+        <Ionicons name="search" size={16} color={colors.inputPlaceholder} style={{ marginRight: 6 }} />
+        <TextInput
+          style={[styles.searchInput, { color: colors.inputText }]}
+          placeholder="Search users…"
+          placeholderTextColor={colors.inputPlaceholder}
+          value={memberSearch}
+          onChangeText={setMemberSearch}
+          autoCapitalize="none"
+        />
+        {isSearching && <ActivityIndicator size="small" color={colors.primary} />}
+      </View>
+
+      {/* No-results hint */}
+      {isSearchActive && searchResults.length === 0 && !isSearching && (
+        <Text style={[styles.noResults, { color: colors.textTertiary }]}>No users found</Text>
+      )}
+
+      {/* Results border top */}
+      {isSearchActive && searchResults.length > 0 && (
+        <View style={[styles.resultsListTop, { borderColor: colors.border }]} />
+      )}
+    </View>
+  ), [error, colors, groupName, selectedUsers, memberSearch, isSearching, isSearchActive, searchResults.length, toggleUser]);
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header */}
@@ -130,87 +223,19 @@ export default function CreateGroupScreen({ navigation }: Props) {
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-        {/* Error */}
-        {error ? <Text style={[styles.errorText, { color: colors.destructive }]}>{error}</Text> : null}
-
-        {/* Group name */}
-        <Text style={[styles.label, { color: colors.modalText }]}>Group Name</Text>
-        <TextInput
-          style={[styles.nameInput, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.inputBg }]}
-          placeholder="e.g. Friends, Work Team…"
-          placeholderTextColor={colors.inputPlaceholder}
-          value={groupName}
-          onChangeText={(t) => { setGroupName(t); setError(''); }}
-          maxLength={60}
-          returnKeyType="next"
-        />
-
-        {/* Selected members pills */}
-        {selectedUsers.length > 0 && (
-          <>
-            <Text style={[styles.label, { color: colors.modalText }]}>Members ({selectedUsers.length})</Text>
-            <View style={styles.pills}>
-              {selectedUsers.map((user) => (
-                <Pressable
-                  key={user.id}
-                  onPress={() => toggleUser(user)}
-                  style={[styles.pill, { backgroundColor: colors.primaryFaded, borderColor: colors.primaryLight }]}
-                >
-                  <Text style={[styles.pillText, { color: colors.primary }]}>{user.displayName}</Text>
-                  <Ionicons name="close-circle" size={14} color={colors.primary} />
-                </Pressable>
-              ))}
-            </View>
-          </>
-        )}
-
-        {/* User search */}
-        <Text style={[styles.label, { color: colors.modalText }]}>Add Members</Text>
-        <View style={[styles.searchBar, { borderColor: colors.border, backgroundColor: colors.inputBg }]}>
-          <Ionicons name="search" size={16} color={colors.inputPlaceholder} style={{ marginRight: 6 }} />
-          <TextInput
-            style={[styles.searchInput, { color: colors.inputText }]}
-            placeholder="Search users…"
-            placeholderTextColor={colors.inputPlaceholder}
-            value={memberSearch}
-            onChangeText={setMemberSearch}
-            autoCapitalize="none"
-          />
-          {isSearching && <ActivityIndicator size="small" color={colors.primary} />}
-        </View>
-
-        {/* Search results */}
-        {memberSearch.trim().length > 0 && (
-          searchResults.length === 0 && !isSearching ? (
-            <Text style={[styles.noResults, { color: colors.textTertiary }]}>No users found</Text>
-          ) : (
-            <View style={[styles.resultsList, { borderColor: colors.border }]}>
-              {searchResults.map((user) => {
-                const isSelected = selectedUsers.some((s) => s.id === user.id);
-                return (
-                  <Pressable
-                    key={user.id}
-                    onPress={() => toggleUser(user)}
-                    style={({ pressed }) => [styles.userRow, { backgroundColor: colors.surfaceElevated, borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
-                  >
-                    <View style={[styles.userAvatar, { backgroundColor: colors.avatarFallbackBg }]}>
-                      <Ionicons name="person" size={20} color="#fff" />
-                    </View>
-                    <View style={styles.userInfo}>
-                      <Text style={[styles.userName, { color: colors.text }]}>{user.displayName}</Text>
-                      <Text style={[styles.userDialect, { color: colors.textTertiary }]}>{user.nativeDialect}</Text>
-                    </View>
-                    <View style={[styles.checkbox, { borderColor: colors.border }, isSelected && { backgroundColor: colors.primary, borderColor: colors.primary }]}>
-                      {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
-          )
-        )}
-      </ScrollView>
+      <FlatList
+        data={isSearchActive ? searchResults : []}
+        keyExtractor={(item) => item.id}
+        renderItem={renderUserItem}
+        ListHeaderComponent={listHeader}
+        contentContainerStyle={styles.flatListContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        removeClippedSubviews
+        initialNumToRender={10}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+      />
     </View>
   );
 }
@@ -241,10 +266,12 @@ const styles = StyleSheet.create({
   createBtnDisabled: { opacity: 0.45 },
   createBtnPressed: { opacity: 0.7 },
   createBtnText: { fontWeight: '700', fontSize: 14 },
+  flatListContent: {
+    paddingBottom: 40,
+  },
   body: {
     padding: 16,
     gap: 4,
-    paddingBottom: 40,
   },
   errorText: {
     fontSize: 13,
@@ -297,16 +324,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 12,
   },
-  resultsList: {
-    marginTop: 4,
-    borderWidth: 1,
-    borderRadius: 10,
-    overflow: 'hidden',
+  resultsListTop: {
+    marginHorizontal: -16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 12,
   },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingVertical: 12,
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,

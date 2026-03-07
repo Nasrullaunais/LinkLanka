@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -55,7 +56,11 @@ export class GroupsController {
   }
 
   @Get(':id/members')
-  findMembers(@Param('id') groupId: string) {
+  async findMembers(@Param('id') groupId: string, @Request() req: AuthRequest) {
+    const isMember = await this.groupsService.isMember(groupId, req.user.sub);
+    if (!isMember)
+      throw new ForbiddenException('You are not a member of this group');
+
     return this.groupsService.findMembers(groupId);
   }
 
@@ -65,7 +70,11 @@ export class GroupsController {
     @Param('id') groupId: string,
     @Body() body: { userId: string },
   ) {
-    const member = await this.groupsService.addMember(groupId, req.user.sub, body.userId);
+    const member = await this.groupsService.addMember(
+      groupId,
+      req.user.sub,
+      body.userId,
+    );
 
     // Send a "You were added to {groupName}" push notification (non-blocking)
     this.sendGroupInviteNotification(groupId, body.userId).catch(() => {});
@@ -81,18 +90,14 @@ export class GroupsController {
     newMemberId: string,
   ): Promise<void> {
     try {
-      const [user, members] = await Promise.all([
-        this.groupsService.getUserById(newMemberId),
-        this.groupsService.findMembers(groupId),
+      const [token, groups] = await Promise.all([
+        this.groupsService.getExpoPushToken(newMemberId),
+        this.groupsService.findGroupsForUser(newMemberId),
       ]);
+      if (!token) return;
 
-      // Find group name from member data (all members share the same group)
-      const groups = await this.groupsService.findGroupsForUser(newMemberId);
       const group = groups.find((g) => g.id === groupId);
       const groupName = group?.name ?? 'a group';
-
-      const token = (user as { expoPushToken?: string | null }).expoPushToken;
-      if (!token) return;
 
       await this.notificationService.sendPushNotifications(
         [token],
@@ -113,6 +118,16 @@ export class GroupsController {
     @Param('userId') targetUserId: string,
   ) {
     await this.groupsService.removeMember(groupId, req.user.sub, targetUserId);
+  }
+
+  /** Update group details (name). Any member may call this. */
+  @Patch(':id')
+  async updateGroup(
+    @Request() req: AuthRequest,
+    @Param('id') groupId: string,
+    @Body() body: { name?: string },
+  ) {
+    return this.groupsService.updateGroup(groupId, req.user.sub, body);
   }
 
   /** Set per-conversation language preference. Pass null to reset to global default. */

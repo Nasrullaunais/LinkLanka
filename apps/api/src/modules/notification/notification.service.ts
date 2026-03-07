@@ -78,7 +78,7 @@ export class NotificationService {
       body,
       sound: 'default' as const,
       priority: 'high' as const,
-      channelId: 'chat-messages',
+      channelId: 'chat-messages-v2',
       data,
     }));
 

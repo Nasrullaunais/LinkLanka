@@ -1,22 +1,15 @@
-import React, { useCallback, useState } from 'react';
+import React, { memo, useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  LayoutAnimation,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
-  UIManager,
   View,
 } from 'react-native';
+import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchDocumentSummary, type SummaryBullet } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
-
-// Enable LayoutAnimation on Android
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 interface DocumentBubbleContentProps {
   messageId: string;
@@ -53,7 +46,7 @@ function getFileTypeLabel(url: string): string {
   return map[ext] ?? 'FILE';
 }
 
-export default function DocumentBubbleContent({
+export default memo(function DocumentBubbleContent({
   messageId,
   fileUrl,
   isOwn,
@@ -72,14 +65,12 @@ export default function DocumentBubbleContent({
   const handleAiPeek = useCallback(async () => {
     // If already expanded, just toggle collapse
     if (isExpanded && bullets) {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setIsExpanded(false);
       return;
     }
 
     // If we already have bullets cached, just expand
     if (bullets) {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setIsExpanded(true);
       return;
     }
@@ -90,7 +81,6 @@ export default function DocumentBubbleContent({
     try {
       const response = await fetchDocumentSummary(messageId);
       setBullets(response.bullets);
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setIsExpanded(true);
     } catch (err) {
       setError('Failed to generate summary');
@@ -116,7 +106,7 @@ export default function DocumentBubbleContent({
     : colors.primaryFaded;
 
   return (
-    <View style={styles.container}>
+    <Animated.View style={styles.container} layout={LinearTransition.duration(250)}>
       {/* ── Document card: tappable to open interrogation ── */}
       <Pressable
         onPress={onOpenInterrogation}
@@ -169,7 +159,11 @@ export default function DocumentBubbleContent({
 
       {/* ── Expanded summary bullets ── */}
       {isExpanded && bullets && (
-        <View style={styles.bulletsContainer}>
+        <Animated.View
+          entering={FadeIn.duration(250)}
+          exiting={FadeOut.duration(200)}
+          style={styles.bulletsContainer}
+        >
           {bullets.map((bullet, idx) => (
             <Pressable
               key={idx}
@@ -188,11 +182,11 @@ export default function DocumentBubbleContent({
               <Ionicons name="open-outline" size={14} color={colors.textTertiary} style={styles.bulletLink} />
             </Pressable>
           ))}
-        </View>
+        </Animated.View>
       )}
-    </View>
+    </Animated.View>
   );
-}
+});
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Patch,
   Post,
   Query,
@@ -16,6 +17,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { JwtAuthGuard } from '../../core/identity/guards/jwt-auth.guard';
+import {
+  profilePictureUploadOptions,
+  MIME_TO_EXT,
+} from '../../core/common/upload';
 import { GroupsService, type UpdateProfileDto } from './groups.service';
 
 interface AuthRequest {
@@ -48,13 +53,17 @@ export class UsersController {
    */
   @Post('me/profile-picture')
   @UseInterceptors(
-    FileInterceptor('file', { dest: './uploads/profile-pictures' }),
+    FileInterceptor(
+      'file',
+      profilePictureUploadOptions('./uploads/profile-pictures'),
+    ),
   )
   async uploadProfilePicture(
     @Request() req: AuthRequest,
-    @UploadedFile() file: any, // multer file
+    @UploadedFile() file: Express.Multer.File,
   ) {
-    const ext = path.extname(file.originalname);
+    // Derive extension from the validated MIME type — never trust originalname.
+    const ext = MIME_TO_EXT[file.mimetype] ?? path.extname(file.originalname);
     const newFileName = `${crypto.randomUUID()}${ext}`;
     const newPath = path.join('./uploads/profile-pictures', newFileName);
 
@@ -83,5 +92,11 @@ export class UsersController {
       search,
       parseInt(limit, 10) || 20,
     );
+  }
+
+  /** GET /users/:id — fetch any user's public profile. */
+  @Get(':id')
+  getUserById(@Param('id') userId: string) {
+    return this.groupsService.getUserById(userId);
   }
 }

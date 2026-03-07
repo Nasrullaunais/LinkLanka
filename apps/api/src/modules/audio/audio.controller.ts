@@ -9,7 +9,6 @@ import {
   Logger,
   Post,
   Request,
-  UnprocessableEntityException,
   UseGuards,
 } from '@nestjs/common';
 
@@ -29,20 +28,14 @@ interface ProcessAudioDto {
   groupId: unknown;
   audioBase64: unknown;
   audioMimeType?: unknown;
+  /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
+  timezone?: unknown;
 }
 
-/** Shape returned to the caller on success */
+/** Shape returned to the caller on success (Phase 1 — immediate response) */
 interface ProcessAudioResult {
   success: true;
   messageId: string;
-  transcription: string | null;
-  translations: {
-    english: string;
-    singlish: string;
-    tanglish: string;
-  } | null;
-  confidenceScore: number;
-  extractedActions?: ExtractedAction[] | null;
 }
 
 interface AuthRequest {
@@ -77,14 +70,19 @@ export class AudioController {
   /**
    * POST /audio/process
    *
-   * Pipeline:
-   *   1. Validate payload & group membership.
-   *   2. Save base64 audio buffer to disk.
-   *   3. Run Gemini transcription + translation.
-   *   4. Reject with 422 audioNotAudible if the recording was silent / inaudible.
-   *   5. Persist the message to the database.
-   *   6. Broadcast `newMessage` to the Socket.IO room.
-   *   7. Return the result to the caller.
+   * Two-phase pipeline:
+   *   Phase 1 (synchronous — returned to caller):
+   *     1. Validate payload & group membership.
+   *     2. Save base64 audio buffer to disk.
+   *     3. Persist the raw message to the database (no transcription yet).
+   *     4. Broadcast `newMessage` to the Socket.IO room (with translations: null).
+   *     5. Return { success, messageId } immediately.
+   *
+   *   Phase 2 (async — fire-and-forget):
+   *     6. Run Gemini transcription + translation.
+   *     7. Audibility gate — if inaudible, broadcast `translationFailed`.
+   *     8. Persist transcription/translations to the database.
+   *     9. Broadcast `messageTranslated` to the Socket.IO room.
    */
   @Post('process')
   @HttpCode(HttpStatus.OK)
@@ -114,9 +112,6 @@ export class AudioController {
         ? body.audioMimeType.trim()
         : 'audio/mp4';
 
-    // Gemini only accepts 'audio/mp4' for AAC / M4A content.
-    const geminiMime = rawMime === 'audio/m4a' ? 'audio/mp4' : rawMime;
-
     // ── 2. Group membership check ─────────────────────────────────────────
     const isMember = await this.groupsService.isMember(groupId, userId);
     if (!isMember) {
@@ -132,16 +127,86 @@ export class AudioController {
       audioBase64,
       rawMime,
     );
+
+    // ── 4. Persist raw message (Phase 1 — no transcription/translation) ──
+    const message = await this.chatService.saveMessage(
+      userId,
+      groupId,
+      MessageContentType.AUDIO,
+      fileUrl,
+      null, // transcription — filled in Phase 2
+      null, // translations — filled in Phase 2
+      null, // confidenceScore — filled in Phase 2
+      null, // extractedActions — filled in Phase 2
+    );
+
+    this.logger.log(
+      `[processAudio] Message persisted (Phase 1): messageId=${message.id}, groupId=${groupId}`,
+    );
+
+    // ── 5. Broadcast raw message immediately ──────────────────────────────
+    this.chatGateway.broadcastNewMessage(groupId, {
+      messageId: message.id,
+      senderId: userId,
+      contentType: MessageContentType.AUDIO,
+      fileUrl,
+      transcription: null,
+      originalText: null,
+      translations: null,
+      confidenceScore: null,
+      extractedActions: null,
+    });
+
+    // ── 6. Kick off Phase 2 asynchronously ────────────────────────────────
+    const timezone =
+      typeof body.timezone === 'string' && body.timezone.trim()
+        ? body.timezone.trim()
+        : undefined;
+
+    this.transcribeAndBroadcast(
+      message.id,
+      userId,
+      groupId,
+      fileUrl,
+      rawMime,
+      timezone,
+    ).catch((err) =>
+      this.logger.error(
+        `[processAudio Phase 2] messageId=${message.id} failed: ${String(err)}`,
+      ),
+    );
+
+    // ── 7. Return immediately ─────────────────────────────────────────────
+    return {
+      success: true,
+      messageId: message.id,
+    };
+  }
+
+  /**
+   * Phase 2 of audio processing: runs Gemini transcription + translation,
+   * checks audibility, persists results, and broadcasts the update.
+   */
+  private async transcribeAndBroadcast(
+    messageId: string,
+    userId: string,
+    groupId: string,
+    fileUrl: string,
+    rawMime: string,
+    timezone?: string,
+  ): Promise<void> {
+    // Gemini only accepts 'audio/mp4' for AAC / M4A content.
+    const geminiMime = rawMime === 'audio/m4a' ? 'audio/mp4' : rawMime;
     const savedFileName = fileUrl.split('/').pop()!;
     const localFilePath = path.join(process.cwd(), 'uploads', savedFileName);
 
-    // ── 4. Fetch user personalization dictionary ──────────────────────────
+    // ── Fetch user personalization dictionary ─────────────────────────────
     const userDictionary =
       await this.personalContextService.getUserDictionary(userId);
 
-    // ── 5. Gemini transcription + translation ─────────────────────────────
+    // ── Gemini transcription + translation ────────────────────────────────
     this.logger.log(
-      `[processAudio] Running Gemini transcription for userId=${userId}`,
+      `[transcribeAndBroadcast] Running Gemini transcription for messageId=${messageId}`,
     );
 
     const result = await this.translationService.translateIntent({
@@ -149,81 +214,70 @@ export class AudioController {
       fileMimeType: geminiMime,
       chatHistory: [],
       userDictionary,
+      timezone,
     });
 
     const { transcription, translations, confidenceScore, extractedActions } =
       result;
 
-    // ── 6. Audibility gate ────────────────────────────────────────────────
-    // Gemini is instructed to return transcription="" and confidenceScore=0
-    // for inaudible / silent recordings. We enforce that here so that the
-    // client receives a clear, structured error rather than a hallucinated
-    // transcription with garbage content.
+    // ── Audibility gate ───────────────────────────────────────────────────
     const appearsInaudible =
-      confidenceScore <= 5 ||
+      confidenceScore <= 25 ||
       !transcription ||
       transcription.trim().length === 0;
 
     if (appearsInaudible) {
       this.logger.warn(
-        `[processAudio] Inaudible audio rejected: userId=${userId}, confidenceScore=${confidenceScore}`,
+        `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
       );
-      // HTTP 422 — the request was valid but semantically unprocessable.
-      throw new UnprocessableEntityException({
-        reason: 'audioNotAudible',
-        message:
-          "Your audio wasn't audible. Please record in a quieter environment or speak louder.",
-      });
+      // Broadcast failure so the client can show an error indicator on the bubble
+      this.chatGateway.broadcastTranslationFailed(groupId, messageId);
+      return;
     }
 
-    // ── 6b. Process extracted actions ──────────────────────────────────────
+    // ── Process extracted actions ─────────────────────────────────────────
     let processedActions: ExtractedAction[] | null = null;
-    if (extractedActions && extractedActions.length > 0) {
+    if (
+      extractedActions &&
+      extractedActions.length > 0 &&
+      confidenceScore >= 60
+    ) {
       processedActions = this.actionService.processActions(
-        'pending',
+        messageId,
         userId,
         groupId,
         extractedActions,
       );
+    } else if (extractedActions && extractedActions.length > 0) {
+      this.logger.warn(
+        `[transcribeAndBroadcast] Discarding ${extractedActions.length} extracted action(s) due to low confidence (${confidenceScore}) for messageId=${messageId}`,
+      );
     }
 
-    // ── 7. Persist message ────────────────────────────────────────────────
-    const message = await this.chatService.saveMessage(
-      userId,
-      groupId,
-      MessageContentType.AUDIO,
-      fileUrl,
+    // ── Persist transcription + translations ──────────────────────────────
+    await this.chatService.updateMessageWithTranslation(messageId, {
       transcription,
-      translations,
-      confidenceScore,
-      processedActions,
-    );
-
-    this.logger.log(
-      `[processAudio] Message persisted: messageId=${message.id}, groupId=${groupId}`,
-    );
-
-    // ── 8. Broadcast to room ──────────────────────────────────────────────
-    this.chatGateway.broadcastToGroup(groupId, {
-      messageId: message.id,
-      senderId: userId,
-      contentType: MessageContentType.AUDIO,
-      fileUrl,
-      transcription,
-      originalText: transcription,
       translations,
       confidenceScore,
       extractedActions: processedActions,
     });
 
-    // ── 9. Return result to caller ────────────────────────────────────────
-    return {
-      success: true,
-      messageId: message.id,
-      transcription,
-      translations,
-      confidenceScore,
-      extractedActions: processedActions,
-    };
+    this.logger.log(
+      `[transcribeAndBroadcast] Translation persisted (Phase 2): messageId=${messageId}`,
+    );
+
+    // ── Broadcast translation update ──────────────────────────────────────
+    this.chatGateway.broadcastTranslationUpdate(
+      groupId,
+      userId,
+      {
+        messageId,
+        transcription,
+        translations,
+        confidenceScore,
+        extractedActions: processedActions,
+      },
+      transcription ?? '',
+    );
   }
 }

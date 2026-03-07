@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { memo, useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -73,7 +73,12 @@ function dismissKey(action: ExtractedAction): string {
   return `action_dismissed_${action.type}_${action.timestamp}`;
 }
 
-function SingleActionCard({
+// ── In-memory cache for dismiss states ──────────────────────────────────────
+// Avoids hitting AsyncStorage (disk I/O) on every mount during fast scroll.
+// Write-through: updates go to both the cache and AsyncStorage.
+const dismissCache = new Map<string, boolean>();
+
+const SingleActionCard = memo(function SingleActionCard({
   action,
   isOwn,
 }: {
@@ -81,20 +86,33 @@ function SingleActionCard({
   isOwn: boolean;
 }) {
   const [isAdded, setIsAdded] = useState(false);
-  const [isDismissed, setIsDismissed] = useState<boolean | null>(null); // null = loading
+  const [isDismissed, setIsDismissed] = useState<boolean | null>(() => {
+    // Read from in-memory cache first (synchronous — no flash of loading state)
+    const key = dismissKey(action);
+    return dismissCache.has(key) ? dismissCache.get(key)! : null;
+  });
   const [editorVisible, setEditorVisible] = useState(false);
   const { colors, isDark } = useTheme();
 
-  // Load persisted dismiss state on mount.
+  // Load persisted dismiss state on mount — only if cache missed.
   useEffect(() => {
-    AsyncStorage.getItem(dismissKey(action)).then((val) => {
-      setIsDismissed(val === 'true');
+    const key = dismissKey(action);
+    if (dismissCache.has(key)) {
+      setIsDismissed(dismissCache.get(key)!);
+      return;
+    }
+    AsyncStorage.getItem(key).then((val) => {
+      const dismissed = val === 'true';
+      dismissCache.set(key, dismissed);
+      setIsDismissed(dismissed);
     });
   }, [action]);
 
   const handleDismiss = useCallback(() => {
+    const key = dismissKey(action);
+    dismissCache.set(key, true); // write-through to cache
     setIsDismissed(true);
-    AsyncStorage.setItem(dismissKey(action), 'true');
+    AsyncStorage.setItem(key, 'true');
   }, [action]);
 
   const editorData: EventEditorData = {
@@ -194,9 +212,9 @@ function SingleActionCard({
       />
     </View>
   );
-}
+});
 
-export default function ActionCard({ actions, isOwn }: ActionCardProps) {
+export default memo(function ActionCard({ actions, isOwn }: ActionCardProps) {
   if (!actions || actions.length === 0) return null;
 
   return (
@@ -206,7 +224,7 @@ export default function ActionCard({ actions, isOwn }: ActionCardProps) {
       ))}
     </View>
   );
-}
+});
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({

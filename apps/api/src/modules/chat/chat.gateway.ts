@@ -51,6 +51,8 @@ interface SendMessagePayload {
   audioMimeType?: string;
   fileUrl?: string;
   fileMimeType?: string;
+  /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
+  timezone?: string;
 }
 
 interface DeleteMessagesPayload {
@@ -81,6 +83,7 @@ interface RawSendMessagePayload {
   file_url?: unknown;
   fileMimeType?: unknown;
   file_mime_type?: unknown;
+  timezone?: unknown;
 }
 
 @UseFilters(new WsAllExceptionsFilter())
@@ -203,15 +206,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `sendMessage received: userId=${userId}, groupId=${normalizedPayload.groupId}, contentType=${normalizedPayload.contentType}`,
     );
 
-    const userDictionary: string =
-      await this.personalContextService.getUserDictionary(userId);
-
-    let fileUrl: string | undefined;
-    let transcription: string | null = null;
-    let translations: Translations | null = null;
-    let confidenceScore = 0;
-    let extractedActions: ExtractedAction[] | null = null;
-
     const isMedia: boolean =
       normalizedPayload.contentType === MessageContentType.IMAGE ||
       normalizedPayload.contentType === MessageContentType.DOCUMENT;
@@ -227,50 +221,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       throw new WsException(
         'AUDIO not accepted on WebSocket — use POST /audio/process',
       );
-    } else if (isMedia) {
-      fileUrl = normalizedPayload.fileUrl;
-      const fileName = normalizedPayload.fileUrl!.split('/').pop()!;
-      const localFilePath = path.join(process.cwd(), 'uploads', fileName);
-
-      const result = await this.translationService.translateIntent({
-        localFilePath,
-        fileMimeType: normalizedPayload.fileMimeType,
-        rawText: normalizedPayload.rawContent,
-        chatHistory: [],
-        userDictionary,
-      });
-
-      transcription = result.transcription;
-      translations = result.translations;
-      confidenceScore = result.confidenceScore;
-      extractedActions = result.extractedActions ?? null;
-    } else {
-      const result = await this.translationService.translateIntent({
-        rawText: normalizedPayload.rawContent,
-        chatHistory: [],
-        userDictionary,
-      });
-
-      transcription = result.transcription;
-      translations = result.translations;
-      confidenceScore = result.confidenceScore;
-      extractedActions = result.extractedActions ?? null;
     }
 
-    // Process extracted actions through ActionService
-    let processedActions: ExtractedAction[] | null = null;
-    if (extractedActions && extractedActions.length > 0) {
-      processedActions = this.actionService.processActions(
-        'pending', // messageId not yet known
-        userId,
-        normalizedPayload.groupId,
-        extractedActions,
-      );
-    }
+    // ── Phase 1: Persist raw message immediately & broadcast ────────────
+    const fileUrl: string | undefined = isMedia
+      ? normalizedPayload.fileUrl
+      : undefined;
 
-    // AUDIO is handled by the dedicated REST endpoint (AudioController).
-    // This handler only reaches TEXT and IMAGE/DOCUMENT, so rawContentToSave
-    // is either the file URL (media) or the raw text.
     const rawContentToSave: string = isMedia
       ? normalizedPayload.fileUrl!
       : normalizedPayload.rawContent!;
@@ -280,59 +237,233 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       normalizedPayload.groupId,
       normalizedPayload.contentType,
       rawContentToSave,
-      transcription,
-      translations,
-      confidenceScore,
-      processedActions,
+      null, // transcription — filled in Phase 2
+      null, // translations — filled in Phase 2
+      null, // confidenceScore — filled in Phase 2
+      null, // extractedActions — filled in Phase 2
     );
 
     this.logger.log(
-      `Message persisted: messageId=${message.id}, groupId=${normalizedPayload.groupId}`,
+      `Message persisted (Phase 1): messageId=${message.id}, groupId=${normalizedPayload.groupId}`,
     );
 
     // For TEXT messages the user's raw input is the definitive original text.
-    // Using the AI's `transcription` field here would cause multi-line messages
-    // to lose all lines except the last one, because the model interprets each
-    // newline-separated line as a separate turn and only "transcribes" the final
-    // one.  For AUDIO / media the transcription IS the source of truth because
-    // the original is opaque binary data.
     const originalText =
       normalizedPayload.contentType === MessageContentType.TEXT
         ? normalizedPayload.rawContent
-        : (transcription ?? normalizedPayload.rawContent);
+        : normalizedPayload.rawContent;
 
+    // Broadcast immediately with translations: null so the client can
+    // display the raw message right away with an "AI translating…" indicator.
     this.server.to(normalizedPayload.groupId).emit('newMessage', {
       messageId: message.id,
       senderId: userId,
       contentType: normalizedPayload.contentType,
       fileUrl: fileUrl ?? normalizedPayload.fileUrl,
-      transcription,
+      transcription: null,
       originalText,
-      translations,
-      confidenceScore,
-      extractedActions: processedActions,
+      translations: null,
+      confidenceScore: null,
+      extractedActions: null,
     });
 
     this.logger.log(
-      `newMessage broadcasted to room ${normalizedPayload.groupId}`,
+      `newMessage broadcasted (Phase 1, no translations) to room ${normalizedPayload.groupId}`,
     );
 
-    // Fire push notifications to offline members (non-blocking)
-    this.sendChatNotification(
-      normalizedPayload.groupId,
+    // ── Phase 2: Translate asynchronously & broadcast update ────────────
+    this.translateAndBroadcast(
+      message.id,
       userId,
-      translations,
-      transcription ?? normalizedPayload.rawContent ?? '',
+      normalizedPayload.groupId,
+      normalizedPayload.contentType,
+      normalizedPayload,
     ).catch((err) =>
-      this.logger.error(`[sendChatNotification] ${String(err)}`),
+      this.logger.error(
+        `[Phase 2 translate] messageId=${message.id} failed: ${String(err)}`,
+      ),
     );
 
     return message;
   }
 
   /**
+   * Phase 2 of the two-phase send: runs AI translation asynchronously,
+   * persists the result, and broadcasts a `messageTranslated` event.
+   */
+  private async translateAndBroadcast(
+    messageId: string,
+    userId: string,
+    groupId: string,
+    contentType: MessageContentType,
+    normalizedPayload: SendMessagePayload,
+  ): Promise<void> {
+    const userDictionary: string =
+      await this.personalContextService.getUserDictionary(userId);
+
+    const isMedia: boolean =
+      contentType === MessageContentType.IMAGE ||
+      contentType === MessageContentType.DOCUMENT;
+
+    let transcription: string | null = null;
+    let translations: Translations | null = null;
+    let confidenceScore = 0;
+    let extractedActions: ExtractedAction[] | null = null;
+
+    try {
+      if (isMedia) {
+        const fileName = normalizedPayload.fileUrl!.split('/').pop()!;
+        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
+
+        const result = await this.translationService.translateIntent({
+          localFilePath,
+          fileMimeType: normalizedPayload.fileMimeType,
+          rawText: normalizedPayload.rawContent,
+          chatHistory: [],
+          userDictionary,
+          timezone: normalizedPayload.timezone,
+        });
+
+        transcription = result.transcription;
+        translations = result.translations;
+        confidenceScore = result.confidenceScore;
+        extractedActions = result.extractedActions ?? null;
+      } else {
+        const result = await this.translationService.translateIntent({
+          rawText: normalizedPayload.rawContent,
+          chatHistory: [],
+          userDictionary,
+          timezone: normalizedPayload.timezone,
+        });
+
+        transcription = result.transcription;
+        translations = result.translations;
+        confidenceScore = result.confidenceScore;
+        extractedActions = result.extractedActions ?? null;
+      }
+
+      // Process extracted actions through ActionService
+      let processedActions: ExtractedAction[] | null = null;
+      if (extractedActions && extractedActions.length > 0) {
+        processedActions = this.actionService.processActions(
+          messageId,
+          userId,
+          groupId,
+          extractedActions,
+        );
+      }
+
+      // Persist translations to DB
+      await this.chatService.updateMessageWithTranslation(messageId, {
+        transcription,
+        translations,
+        confidenceScore,
+        extractedActions: processedActions,
+      });
+
+      this.logger.log(
+        `Message translated (Phase 2): messageId=${messageId}, groupId=${groupId}`,
+      );
+
+      // Broadcast translation update to the room
+      this.server.to(groupId).emit('messageTranslated', {
+        messageId,
+        transcription,
+        translations,
+        confidenceScore,
+        extractedActions: processedActions,
+      });
+
+      this.logger.log(`messageTranslated broadcasted to room ${groupId}`);
+
+      // Fire push notifications with the translated text (non-blocking)
+      this.sendChatNotification(
+        groupId,
+        userId,
+        translations,
+        transcription ?? normalizedPayload.rawContent ?? '',
+      ).catch((err) =>
+        this.logger.error(`[sendChatNotification] ${String(err)}`),
+      );
+    } catch (err) {
+      this.logger.error(
+        `[translateAndBroadcast] Translation failed for messageId=${messageId}: ${String(err)}`,
+      );
+
+      // Notify the room that translation failed so clients can show a retry button
+      this.server.to(groupId).emit('translationFailed', { messageId });
+    }
+  }
+
+  /**
    * Broadcasts a `newMessage` event to every socket in the given room.
-   * Called by AudioController after saving and transcribing audio via REST.
+   * Called by AudioController after saving the raw message in Phase 1.
+   */
+  broadcastNewMessage(
+    groupId: string,
+    payload: {
+      messageId: string;
+      senderId: string;
+      contentType: MessageContentType;
+      fileUrl?: string;
+      transcription: string | null;
+      originalText: string | null;
+      translations: Translations | null;
+      confidenceScore: number | null;
+      extractedActions?: ExtractedAction[] | null;
+    },
+  ): void {
+    this.server.to(groupId).emit('newMessage', payload);
+    this.logger.log(
+      `[broadcastNewMessage] newMessage emitted to room ${groupId}, messageId=${payload.messageId}`,
+    );
+  }
+
+  /**
+   * Broadcasts a `messageTranslated` event after Phase 2 translation completes.
+   * Also fires push notifications since the translated text is now available.
+   */
+  broadcastTranslationUpdate(
+    groupId: string,
+    senderId: string,
+    payload: {
+      messageId: string;
+      transcription: string | null;
+      translations: Translations | null;
+      confidenceScore: number;
+      extractedActions?: ExtractedAction[] | null;
+    },
+    fallbackText: string,
+  ): void {
+    this.server.to(groupId).emit('messageTranslated', payload);
+    this.logger.log(
+      `[broadcastTranslationUpdate] messageTranslated emitted to room ${groupId}, messageId=${payload.messageId}`,
+    );
+
+    // Fire push notifications to offline members (non-blocking)
+    this.sendChatNotification(
+      groupId,
+      senderId,
+      payload.translations,
+      fallbackText,
+    ).catch((err) =>
+      this.logger.error(`[sendChatNotification] ${String(err)}`),
+    );
+  }
+
+  /**
+   * Broadcasts a `translationFailed` event when Phase 2 translation fails.
+   */
+  broadcastTranslationFailed(groupId: string, messageId: string): void {
+    this.server.to(groupId).emit('translationFailed', { messageId });
+    this.logger.log(
+      `[broadcastTranslationFailed] translationFailed emitted to room ${groupId}, messageId=${messageId}`,
+    );
+  }
+
+  /**
+   * @deprecated Use broadcastNewMessage + broadcastTranslationUpdate instead.
+   * Kept for backward compatibility — calls both phases inline.
    */
   broadcastToGroup(
     groupId: string,
@@ -376,15 +507,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     fallbackText: string,
   ): Promise<void> {
     try {
-      // 1. Get all members of the group with their user data
-      const members = await this.groupsService.findMembers(groupId);
+      // 1. Get all members of the group with their user data (including push tokens — server-side only)
+      const members = await this.groupsService.findMembersWithTokens(groupId);
 
       // 2. Get the group info for the notification title
-      const group = members.length > 0
-        ? await this.groupsService.findGroupsForUser(senderId).then(
-            (groups) => groups.find((g) => g.id === groupId),
-          )
-        : undefined;
+      const group =
+        members.length > 0
+          ? await this.groupsService
+              .findGroupsForUser(senderId)
+              .then((groups) => groups.find((g) => g.id === groupId))
+          : undefined;
 
       // 3. Get sender info for notification title
       const sender = members.find((m) => m.userId === senderId);
@@ -424,7 +556,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           expoPushToken?: string | null;
         };
         const token = user.expoPushToken!;
-        const lang = member.preferredLanguage ?? user.nativeDialect ?? 'english';
+        const lang =
+          member.preferredLanguage ?? user.nativeDialect ?? 'english';
         const body =
           (translations as Record<string, string> | null)?.[lang] ??
           fallbackText;
@@ -717,6 +850,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       fileUrl: typeof fileUrlValue === 'string' ? fileUrlValue : undefined,
       fileMimeType:
         typeof fileMimeTypeValue === 'string' ? fileMimeTypeValue : undefined,
+      timezone:
+        typeof payload.timezone === 'string' && payload.timezone.trim()
+          ? payload.timezone.trim()
+          : undefined,
     };
   }
 

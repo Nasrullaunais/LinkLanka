@@ -259,6 +259,10 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
             entries.length === 0 && styles.listContentEmpty,
           ]}
           showsVerticalScrollIndicator={false}
+          removeClippedSubviews
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={7}
         />
       )}
 

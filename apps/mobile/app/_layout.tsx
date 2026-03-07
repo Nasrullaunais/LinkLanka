@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import 'react-native-reanimated';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AuthProvider, useAuth } from '../src/contexts/AuthContext';
 import { SocketProvider } from '../src/contexts/SocketContext';
@@ -17,6 +18,8 @@ import ChatScreen from '../src/screens/ChatScreen';
 import CreateGroupScreen from '../src/screens/CreateGroupScreen';
 import ProfileScreen from '../src/screens/ProfileScreen';
 import PersonalDictionaryScreen from '../src/screens/PersonalDictionaryScreen';
+import GroupInfoScreen from '../src/screens/GroupInfoScreen';
+import PersonInfoScreen from '../src/screens/PersonInfoScreen';
 
 import type { AuthStackParamList, AppStackParamList } from '../src/navigation/types';
 
@@ -40,7 +43,7 @@ function AppNavigator() {
   return (
     <SocketProvider userToken={userToken}>
       <NotificationProvider userToken={userToken}>
-        <AppStack.Navigator screenOptions={{ headerShown: false }}>
+        <AppStack.Navigator screenOptions={{ headerShown: false, freezeOnBlur: true }}>
           <AppStack.Screen name="HomeTabs" component={ChatsListScreen} />
           <AppStack.Screen
             name="Chat"
@@ -60,6 +63,16 @@ function AppNavigator() {
           <AppStack.Screen
             name="PersonalDictionary"
             component={PersonalDictionaryScreen}
+            options={{ animation: 'slide_from_right' }}
+          />
+          <AppStack.Screen
+            name="GroupInfo"
+            component={GroupInfoScreen}
+            options={{ animation: 'slide_from_right' }}
+          />
+          <AppStack.Screen
+            name="PersonInfo"
+            component={PersonInfoScreen}
             options={{ animation: 'slide_from_right' }}
           />
         </AppStack.Navigator>
@@ -88,14 +101,16 @@ function AppGate() {
 // ── Root Layout ──────────────────────────────────────────────────────────────
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
-      <ThemeProvider>
-        <AuthProvider>
-          <AppGate />
-          <ThemedStatusBar />
-        </AuthProvider>
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <AppGate />
+            <ThemedStatusBar />
+          </AuthProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { JwtAuthGuard } from '../../core/identity/guards/jwt-auth.guard';
+import { mediaUploadOptions, MIME_TO_EXT } from '../../core/common/upload';
 
 interface UploadResponse {
   url: string;
@@ -20,11 +21,12 @@ interface UploadResponse {
 @UseGuards(JwtAuthGuard)
 export class MediaController {
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file', { dest: './uploads' }))
+  @UseInterceptors(FileInterceptor('file', mediaUploadOptions('./uploads')))
   async uploadFile(
     @UploadedFile() file: Express.Multer.File,
   ): Promise<UploadResponse> {
-    const ext = path.extname(file.originalname);
+    // Derive extension from the validated MIME type — never trust originalname.
+    const ext = MIME_TO_EXT[file.mimetype] ?? path.extname(file.originalname);
     const newFileName = `${crypto.randomUUID()}${ext}`;
     const newPath = path.join('./uploads', newFileName);
 

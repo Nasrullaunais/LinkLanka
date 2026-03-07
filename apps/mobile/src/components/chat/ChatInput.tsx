@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,8 +18,16 @@ import Animated, {
   withSequence,
   withTiming,
   withDelay,
+  withSpring,
+  interpolate,
   Easing,
+  runOnJS,
+  type SharedValue,
 } from 'react-native-reanimated';
+import {
+  Gesture,
+  GestureDetector,
+} from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -28,13 +36,14 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
   RecordingPresets,
-  RecordingOptions,
+  type RecordingOptions,
   AudioModule,
 } from 'expo-audio';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
+import { Image as Compressor } from 'react-native-compressor';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ChatPayload {
@@ -69,32 +78,85 @@ function getMimeFromUri(uri: string): string {
 }
 
 // ── Recording preset ──────────────────────────────────────────────────────────
-// Spreads the stock HIGH_QUALITY preset and enables real-time metering so we
-// can visualise audio amplitude during recording and detect silent clips.
 const RECORDING_OPTIONS_WITH_METERING: RecordingOptions = {
   ...RecordingPresets.HIGH_QUALITY,
   isMeteringEnabled: true,
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
-/** Number of amplitude bars shown in the live waveform. */
 const WAVEFORM_BARS = 24;
-/** dBFS threshold below which a recording is considered silent. */
-const SILENCE_THRESHOLD_DB = -45;
+const SILENCE_THRESHOLD_DB = -40;
+/** Horizontal drag distance (px) needed to trigger swipe-to-cancel. */
+const CANCEL_THRESHOLD = 100;
+const HINT_NEAR_SILENT_DB = -55;
+const HINT_QUIET_DB = -45;
+const HINT_SILENCE_TICKS = 20;
+const HINT_CLEAR_TICKS = 5;
 
-/** Normalise a raw dBFS metering value (typically -160 to 0) to 0-1 range. */
 function normaliseDb(db: number): number {
-  // Map [-60, 0] dBFS → [0, 1] and clamp
   return Math.max(0, Math.min(1, (db + 60) / 60));
 }
+
+// ── Pulsing red dot ──────────────────────────────────────────────────────────
+const PulsingDot = React.memo(function PulsingDot() {
+  const scale = useSharedValue(1);
+  const opacity = useSharedValue(1);
+  useEffect(() => {
+    scale.value = withRepeat(
+      withSequence(
+        withTiming(1.3, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+    opacity.value = withRepeat(
+      withSequence(
+        withTiming(0.5, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+  }, [scale, opacity]);
+  const dotStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+  }));
+  return <Animated.View style={[styles.pulsingDot, dotStyle]} />;
+});
+
+// ── Animated chevrons for "slide to cancel" hint ─────────────────────────────
+const SlideHintChevrons = React.memo(function SlideHintChevrons() {
+  const translateX = useSharedValue(0);
+  useEffect(() => {
+    translateX.value = withRepeat(
+      withSequence(
+        withTiming(-6, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+  }, [translateX]);
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+  return (
+    <Animated.View style={[styles.chevronRow, animStyle]}>
+      <Ionicons name="chevron-back" size={14} color="#9ca3af" />
+      <Ionicons name="chevron-back" size={14} color="#b0b5bf" style={{ marginLeft: -6 }} />
+    </Animated.View>
+  );
+});
 
 // ── Recording bar ─────────────────────────────────────────────────────────────
 interface RecordingBarProps {
   durationMs: number;
   isSending: boolean;
-  onCancel: () => void;
-  /** Normalised amplitude levels (0–1) for live waveform bars. */
   waveform: number[];
+  hint: string | null;
+  slideX: SharedValue<number>;
 }
 
 /** Animated bar for the processing waveform */
@@ -113,23 +175,41 @@ function ProcessingBar({ index, color }: { index: number; color: string }) {
       ),
     );
   }, [height, index]);
-  const animStyle = useAnimatedStyle(() => ({
-    height: height.value,
-  }));
+  const animStyle = useAnimatedStyle(() => ({ height: height.value }));
   return (
-    <Animated.View
-      style={[
-        { width: 3, borderRadius: 2, backgroundColor: color },
-        animStyle,
-      ]}
-    />
+    <Animated.View style={[{ width: 3, borderRadius: 2, backgroundColor: color }, animStyle]} />
   );
 }
 
 const PROCESSING_BARS = 16;
 
-function RecordingBar({ durationMs, isSending, onCancel, waveform }: RecordingBarProps) {
+function RecordingBar({ durationMs, isSending, waveform, hint, slideX }: RecordingBarProps) {
   const { colors } = useTheme();
+
+  // Cancel hint fades in as the user drags left.
+  const cancelHintStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(slideX.value, [0, -CANCEL_THRESHOLD * 0.6], [0, 1], 'clamp'),
+  }));
+
+  // "Slide to cancel" text fades out as user drags.
+  const slideHintStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(slideX.value, [0, -CANCEL_THRESHOLD * 0.3], [1, 0], 'clamp'),
+  }));
+
+  // Hint text fades in/out.
+  const [hintVisible, setHintVisible] = useState(false);
+  const hintOpacity = useSharedValue(0);
+  useEffect(() => {
+    if (hint) {
+      setHintVisible(true);
+      hintOpacity.value = withTiming(1, { duration: 300 });
+    } else {
+      hintOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
+        if (finished) runOnJS(setHintVisible)(false);
+      });
+    }
+  }, [hint, hintOpacity]);
+  const hintStyle = useAnimatedStyle(() => ({ opacity: hintOpacity.value }));
 
   if (isSending) {
     return (
@@ -146,37 +226,45 @@ function RecordingBar({ durationMs, isSending, onCancel, waveform }: RecordingBa
 
   return (
     <View style={styles.recordingBar}>
-      {/* Live waveform — bars height-mapped from real-time metering amplitude */}
-      <View style={styles.liveWaveformContainer}>
-        {waveform.map((level, i) => {
-          const barH = Math.max(4, Math.round(level * 28));
-          // Bars towards the tail (most recent) are brighter; older ones fade
-          const opacity = 0.35 + (i / (WAVEFORM_BARS - 1)) * 0.65;
+      {/* Left: pulsing dot + timer */}
+      <View style={styles.recordingLeftSection}>
+        <PulsingDot />
+        <Text style={[styles.recordingTimer, { color: colors.recordingText }]}>
+          {formatDuration(durationMs)}
+        </Text>
+      </View>
+
+      {/* Center: slide-to-cancel hint */}
+      <View style={styles.recordingCenterSection}>
+        {/* Default: animated "slide to cancel" hint */}
+        <Animated.View style={[styles.slideHintContainer, slideHintStyle]}>
+          <SlideHintChevrons />
+          <Text style={styles.slideHintText}>Slide to cancel</Text>
+        </Animated.View>
+        {/* As user drags: cancel confirmation */}
+        <Animated.View style={[styles.cancelConfirmContainer, cancelHintStyle]}>
+          <Ionicons name="trash-outline" size={16} color="#ef4444" />
+          <Text style={styles.cancelConfirmText}>Release to cancel</Text>
+        </Animated.View>
+      </View>
+
+      {/* Right: mini waveform */}
+      <View style={styles.miniWaveformContainer}>
+        {waveform.slice(-12).map((level, i) => {
+          const barH = Math.max(3, Math.round(level * 22));
+          const opacity = 0.4 + (i / 11) * 0.6;
           return (
-            <View
-              key={i}
-              style={[
-                styles.liveBar,
-                {
-                  height: barH,
-                  opacity,
-                },
-              ]}
-            />
+            <View key={i} style={[styles.liveBar, { height: barH, opacity }]} />
           );
         })}
       </View>
 
-      <Text style={[styles.recordingTimer, { color: colors.recordingText }]}>{formatDuration(durationMs)}</Text>
-
-      <Pressable
-        onPress={onCancel}
-        style={({ pressed }) => [styles.cancelBtn, pressed && { opacity: 0.6 }]}
-        hitSlop={10}
-      >
-        <Ionicons name="trash-outline" size={16} color={colors.destructive} />
-        <Text style={[styles.cancelText, { color: colors.destructive }]}>Cancel</Text>
-      </Pressable>
+      {/* Inline hint for audio quality */}
+      {hintVisible && (
+        <Animated.Text style={[styles.recordingHint, hintStyle]}>
+          {hint}
+        </Animated.Text>
+      )}
     </View>
   );
 }
@@ -253,70 +341,89 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const [isSending, setIsSending] = useState(false);
   const [showSheet, setShowSheet] = useState(false);
   const [showMagicModal, setShowMagicModal] = useState(false);
+  const [recordingHint, setRecordingHint] = useState<string | null>(null);
 
-  // Ref tracks recording state synchronously — avoids the React render-timing
-  // race where onPressOut fires before setIsRecording(true) has re-rendered,
-  // leaving onPressOut={undefined} and silently dropping the send.
+  // ── Sync refs ─────────────────────────────────────────────────────────────
   const isRecordingRef = useRef(false);
-  // Set to true when the user taps Cancel so handleStopRecording discards audio.
-  const isCancelledRef = useRef(false);
+  /**
+   * Shared value so the gesture worklet (UI thread) can read/write the
+   * cancelled flag synchronously — JS refs are invisible to worklets.
+   */
+  const isCancelled = useSharedValue(0); // 0 = active, 1 = cancelled
+  /**
+   * Stores the promise returned by doStartRecording so that
+   * handleStopRecording can await it — eliminates the race condition where
+   * the user releases their finger before the async start flow completes.
+   */
+  const startPromiseRef = useRef<Promise<void> | null>(null);
 
   const recorder = useAudioRecorder(RECORDING_OPTIONS_WITH_METERING);
-  // Live recorder state updated every 100ms — gives us durationMillis for timer
   const recorderState = useAudioRecorderState(recorder, 100);
-  // Mirror durationMillis into a ref so handleStopRecording can read the
-  // final duration without being recreated every 100ms as recorderState updates.
   const durationRef = useRef(0);
-  /** Raw dBFS metering samples collected during the current recording session. */
   const meteringHistoryRef = useRef<number[]>([]);
-  /** Normalised (0–1) amplitude levels for the live waveform visual —
-   *  a sliding window of the last WAVEFORM_BARS samples. */
   const [waveform, setWaveform] = useState<number[]>(() => Array(WAVEFORM_BARS).fill(0));
 
+  const silentTicksRef = useRef(0);
+  const loudTicksRef = useRef(0);
+
+  // ── Slide-to-cancel shared value ──────────────────────────────────────────
+  const slideX = useSharedValue(0);
+  const micBtnAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: Math.min(0, slideX.value) }],
+  }));
+
+  // ── Metering + real-time hints ────────────────────────────────────────────
   useEffect(() => {
     durationRef.current = recorderState.durationMillis ?? 0;
 
-    // Collect metering and update the live waveform only while actually recording.
-    if (isRecording && recorderState.metering != null) {
-      const raw = recorderState.metering;
-      meteringHistoryRef.current.push(raw);
+    if (!isRecording || recorderState.metering == null) return;
 
-      const normalised = normaliseDb(raw);
-      setWaveform((prev) => {
-        const next = [...prev, normalised];
-        return next.length > WAVEFORM_BARS ? next.slice(next.length - WAVEFORM_BARS) : next;
-      });
+    const raw = recorderState.metering;
+    meteringHistoryRef.current.push(raw);
+
+    // Live waveform
+    const normalised = normaliseDb(raw);
+    setWaveform((prev) => {
+      const next = [...prev, normalised];
+      return next.length > WAVEFORM_BARS ? next.slice(next.length - WAVEFORM_BARS) : next;
+    });
+
+    // Real-time audio quality hints
+    if (raw < HINT_NEAR_SILENT_DB) {
+      silentTicksRef.current += 1;
+      loudTicksRef.current = 0;
+      if (silentTicksRef.current >= HINT_SILENCE_TICKS) {
+        setRecordingHint('Move closer to the mic');
+      }
+    } else if (raw < HINT_QUIET_DB) {
+      silentTicksRef.current += 1;
+      loudTicksRef.current = 0;
+      if (silentTicksRef.current >= HINT_SILENCE_TICKS) {
+        setRecordingHint('Speak up');
+      }
+    } else {
+      loudTicksRef.current += 1;
+      silentTicksRef.current = 0;
+      if (loudTicksRef.current >= HINT_CLEAR_TICKS) {
+        setRecordingHint(null);
+      }
     }
   }, [recorderState.durationMillis, recorderState.metering, isRecording]);
 
-  const hasText = inputText.trim().length > 0;
-  const charCount = inputText.length;
-
-  // ── Text Send ────────────────────────────────────────────────────────────
-  const handleSendText = useCallback(() => {
-    const trimmed = inputText.trim();
-    if (!trimmed) return;
-    onSendMessage({ type: 'TEXT', content: trimmed });
-    setInputText('');
-  }, [inputText, onSendMessage]);
-
-  // ── Audio: Cancel ────────────────────────────────────────────────────────
-  const handleCancelRecording = useCallback(async () => {
-    isCancelledRef.current = true;
+  // ── Reset helper ──────────────────────────────────────────────────────────
+  const resetRecordingState = useCallback(() => {
     isRecordingRef.current = false;
+    isCancelled.value = 0;
+    startPromiseRef.current = null;
     setIsRecording(false);
-    try {
-      await recorder.stop();
-    } catch {
-      // ignore — we just want the recorder stopped cleanly
-    }
-    await AudioModule.setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-  }, [recorder]);
+    setRecordingHint(null);
+    silentTicksRef.current = 0;
+    loudTicksRef.current = 0;
+    slideX.value = withSpring(0, { damping: 20, stiffness: 300 });
+  }, [slideX, isCancelled]);
 
   // ── Audio: Start ─────────────────────────────────────────────────────────
-  const handleStartRecording = useCallback(async () => {
-    // Prevent double-trigger
+  const doStartRecording = useCallback(async () => {
     if (isRecordingRef.current) return;
 
     try {
@@ -325,63 +432,89 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         Alert.alert('Permission required', 'Microphone access is needed to record audio.');
         return;
       }
+
       await AudioModule.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      isCancelledRef.current = false;
-      durationRef.current = 0;
-      // Reset metering history and waveform display for the new session.
-      meteringHistoryRef.current = [];
-      setWaveform(Array(WAVEFORM_BARS).fill(0));
-      // prepareToRecordAsync() MUST be called before record() — without it the
-      // native recorder is never initialised, durationMillis stays 0, and
-      // recorder.uri is null after stop (which was the root cause of the
-      // "No audio was captured" error).
       await recorder.prepareToRecordAsync();
+
+      // Bail if cancelled during async setup (user slid away or lifted early)
+      if (isCancelled.value === 1) {
+        try { await recorder.stop(); } catch { /* ok */ }
+        await AudioModule.setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+        return;
+      }
+
+      durationRef.current = 0;
+      meteringHistoryRef.current = [];
+      silentTicksRef.current = 0;
+      loudTicksRef.current = 0;
+      setWaveform(Array(WAVEFORM_BARS).fill(0));
+      setRecordingHint(null);
+
       recorder.record();
-      // Set ref BEFORE state so onPressOut sees it immediately without waiting
-      // for the React re-render that follows setIsRecording.
       isRecordingRef.current = true;
       setIsRecording(true);
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch (error) {
       console.error('[ChatInput] Failed to start recording:', error);
+      resetRecordingState();
       Alert.alert('Recording Error', 'Could not start audio recording.');
     }
-  }, [recorder]);
+  }, [recorder, resetRecordingState, isCancelled]);
 
-  // ── Audio: Stop (send or discard) ─────────────────────────────────────────
-  // Always attached to onPressOut — the isRecordingRef guard ensures it only
-  // acts when we are genuinely mid-recording, preventing spurious triggers.
+  /** Wrapper that stores the start promise for stop to await. */
+  const handleStartRecording = useCallback(() => {
+    isCancelled.value = 0;
+    startPromiseRef.current = doStartRecording();
+  }, [doStartRecording, isCancelled]);
+
+  // ── Audio: Cancel ────────────────────────────────────────────────────────
+  const handleCancelRecording = useCallback(async () => {
+    isCancelled.value = 1;
+
+    // If start is still in progress, wait for it so we can stop cleanly
+    if (startPromiseRef.current) {
+      try { await startPromiseRef.current; } catch { /* ok */ }
+      startPromiseRef.current = null;
+    }
+
+    resetRecordingState();
+
+    try {
+      await recorder.stop();
+    } catch {
+      // Recorder might not have started — ignore
+    }
+    await AudioModule.setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  }, [recorder, resetRecordingState, isCancelled]);
+
+  // ── Audio: Stop (send) ────────────────────────────────────────────────────
   const handleStopRecording = useCallback(async () => {
-    if (!isRecordingRef.current) return;
-    isRecordingRef.current = false;
-    setIsRecording(false);
+    // CRITICAL: await the async start to finish first.
+    // This solves the race where the user releases before start completes.
+    if (startPromiseRef.current) {
+      try { await startPromiseRef.current; } catch { /* ok */ }
+      startPromiseRef.current = null;
+    }
+
+    // After awaiting start, check conditions
+    if (!isRecordingRef.current || isCancelled.value === 1) {
+      resetRecordingState();
+      return;
+    }
+
+    const capturedDuration = durationRef.current;
+    resetRecordingState();
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     try {
-      // Snapshot duration now — before stop() resets the native recorder state.
-      const capturedDuration = durationRef.current;
-
       await recorder.stop();
-      // Restore audio mode for playback: keep playsInSilentMode so the
-      // recorded clip (and any other audio in the app) can be heard even
-      // when the iOS ring/silent switch is off.
       await AudioModule.setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
 
-      // User hit Cancel — discard
-      if (isCancelledRef.current) {
-        isCancelledRef.current = false;
-        return;
-      }
+      // Discard accidental taps shorter than 400ms
+      if (capturedDuration < 400) return;
 
-      // Silently reject accidental taps shorter than 500ms
-      if (capturedDuration < 500) {
-        return;
-      }
-
-      // ── Client-side silence guard ──────────────────────────────────────────────
-      // Inspect collected metering samples. If the peak level never exceeded
-      // SILENCE_THRESHOLD_DB, the recording is considered silent — reject it
-      // immediately, before any network call, to give instant feedback.
+      // Client-side silence guard
       const meteringHistory = meteringHistoryRef.current;
       if (meteringHistory.length > 0) {
         const peakDb = Math.max(...meteringHistory);
@@ -402,10 +535,6 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
       setIsSending(true);
 
-      // No compression — the recorder already produces a compact 128kbps AAC
-      // M4A file which is ideal for Gemini. Re-compressing with
-      // react-native-compressor was degrading the audio to ~32kbps and
-      // introducing artefacts that made speech recognition unusably inaccurate.
       const mimeType = getMimeFromUri(uri);
       const audioFile = new File(uri);
       const base64 = await audioFile.base64();
@@ -422,7 +551,49 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     } finally {
       setIsSending(false);
     }
-  }, [recorder, onSendMessage]);
+  }, [recorder, onSendMessage, resetRecordingState, isCancelled]);
+
+  // ── Mic gesture ───────────────────────────────────────────────────────────
+  //
+  // Single Pan gesture with activateAfterLongPress — simple & reliable.
+  // The useCallback handlers already have stable identities (memoized deps),
+  // so passing them directly keeps the gesture stable without needing ref
+  // indirection (which causes Reanimated "modify key current" warnings).
+  //
+  const micGesture = useMemo(() => {
+    return Gesture.Pan()
+      .activateAfterLongPress(180)
+      .minDistance(0)
+      .onStart(() => {
+        isCancelled.value = 0;
+        runOnJS(handleStartRecording)();
+      })
+      .onUpdate((e) => {
+        slideX.value = Math.min(0, e.translationX);
+
+        // Past cancel threshold → cancel
+        if (e.translationX < -CANCEL_THRESHOLD && isCancelled.value === 0) {
+          isCancelled.value = 1;
+          runOnJS(handleCancelRecording)();
+        }
+      })
+      .onEnd(() => {
+        if (isCancelled.value === 0) {
+          runOnJS(handleStopRecording)();
+        }
+      })
+      .onFinalize(() => {
+        slideX.value = withSpring(0, { damping: 20, stiffness: 300 });
+      });
+  }, [slideX, isCancelled, handleStartRecording, handleStopRecording, handleCancelRecording]);
+
+  // ── Text send ────────────────────────────────────────────────────────────
+  const handleSendText = useCallback(() => {
+    const trimmed = inputText.trim();
+    if (!trimmed) return;
+    onSendMessage({ type: 'TEXT', content: trimmed });
+    setInputText('');
+  }, [inputText, onSendMessage]);
 
   // ── Attachment ───────────────────────────────────────────────────────────
   const pickFromCamera = useCallback(async () => {
@@ -431,14 +602,15 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       Alert.alert('Permission required', 'Camera access is needed to take photos.');
       return;
     }
-
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'],
-      quality: 0.8,
-    });
-
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
     if (!result.canceled && result.assets[0]) {
-      onSendMessage({ type: 'IMAGE', content: result.assets[0].uri });
+      // Compress before sending — reduces upload time + decode cost in bubbles
+      const compressed = await Compressor.compress(result.assets[0].uri, {
+        maxWidth: 1200,
+        maxHeight: 1200,
+        quality: 0.7,
+      });
+      onSendMessage({ type: 'IMAGE', content: compressed });
     }
   }, [onSendMessage]);
 
@@ -448,20 +620,19 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       Alert.alert('Permission required', 'Gallery access is needed to select photos.');
       return;
     }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.8,
-    });
-
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
     if (!result.canceled && result.assets[0]) {
-      onSendMessage({ type: 'IMAGE', content: result.assets[0].uri });
+      // Compress before sending — reduces upload time + decode cost in bubbles
+      const compressed = await Compressor.compress(result.assets[0].uri, {
+        maxWidth: 1200,
+        maxHeight: 1200,
+        quality: 0.7,
+      });
+      onSendMessage({ type: 'IMAGE', content: compressed });
     }
   }, [onSendMessage]);
 
-  const handleAttachment = useCallback(() => {
-    setShowSheet(true);
-  }, []);
+  const handleAttachment = useCallback(() => setShowSheet(true), []);
 
   const pickDocument = useCallback(async () => {
     try {
@@ -474,14 +645,9 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         ],
         copyToCacheDirectory: true,
       });
-
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
-        onSendMessage({
-          type: 'DOCUMENT',
-          content: asset.uri,
-          mimeType: asset.mimeType ?? 'application/pdf',
-        });
+        onSendMessage({ type: 'DOCUMENT', content: asset.uri, mimeType: asset.mimeType ?? 'application/pdf' });
       }
     } catch {
       Alert.alert('Error', 'Failed to pick document. Please try again.');
@@ -505,6 +671,8 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
   // ── Render ───────────────────────────────────────────────────────────────
   const showRecordingBar = isRecording || isSending;
+  const hasText = inputText.trim().length > 0;
+  const charCount = inputText.length;
 
   return (
     <>
@@ -514,8 +682,9 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
           <RecordingBar
             durationMs={recorderState.durationMillis ?? 0}
             isSending={isSending}
-            onCancel={handleCancelRecording}
             waveform={waveform}
+            hint={recordingHint}
+            slideX={slideX}
           />
         )}
 
@@ -561,7 +730,6 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
               >
                 <Text style={styles.magicBtnIcon}>✨</Text>
               </Pressable>
-
               {/* Send button */}
               <Pressable
                 onPress={handleSendText}
@@ -576,20 +744,18 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
               <ActivityIndicator size="small" color="#fff" />
             </View>
           ) : (
-            <Pressable
-              onLongPress={handleStartRecording}
-              onPressOut={handleStopRecording}
-              delayLongPress={200}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { backgroundColor: colors.primary },
-                isRecording && styles.actionBtnRecording,
-                pressed && !isRecording && styles.actionBtnPressed,
-              ]}
-              hitSlop={8}
-            >
-              <Ionicons name={isRecording ? 'stop' : 'mic'} size={20} color="#fff" />
-            </Pressable>
+            /* Mic button — wrapped in GestureDetector for pan + long-press */
+            <GestureDetector gesture={micGesture}>
+              <Animated.View
+                style={[
+                  styles.actionBtn,
+                  { backgroundColor: isRecording ? '#ef4444' : colors.primary },
+                  micBtnAnimStyle,
+                ]}
+              >
+                <Ionicons name="mic" size={20} color="#fff" />
+              </Animated.View>
+            </GestureDetector>
           )}
         </View>
       </View>
@@ -615,6 +781,8 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     </>
   );
 }
+
+ChatInput.displayName = 'ChatInput';
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
@@ -691,8 +859,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingBottom: 8,
     gap: 8,
+    minHeight: 36,
   },
-  // Live waveform (replaces pulsing dot)
+  recordingLeftSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pulsingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+  },
+  recordingTimer: {
+    fontSize: 15,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+    minWidth: 36,
+  },
+  recordingCenterSection: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    height: 24,
+  },
+  slideHintContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    position: 'absolute',
+  },
+  chevronRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  slideHintText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#9ca3af',
+  },
+  cancelConfirmContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    position: 'absolute',
+  },
+  cancelConfirmText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#ef4444',
+  },
+  miniWaveformContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 24,
+    gap: 2,
+    overflow: 'hidden',
+  },
   liveWaveformContainer: {
     flex: 1,
     flexDirection: 'row',
@@ -706,27 +931,17 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: '#ef4444',
   },
-  recordingTimer: {
-    fontSize: 15,
-    fontWeight: '600',
-    minWidth: 36,
+  recordingHint: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#f59e0b',
+    position: 'absolute',
+    right: 0,
+    bottom: -2,
   },
   recordingBarText: {
     flex: 1,
     fontSize: 13,
-  },
-  cancelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    backgroundColor: 'rgba(239,68,68,0.12)',
-  },
-  cancelText: {
-    fontSize: 12,
-    fontWeight: '600',
   },
   // character count
   charCount: {

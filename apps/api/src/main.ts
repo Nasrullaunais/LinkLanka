@@ -1,14 +1,18 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, ValidationPipe } from '@nestjs/common';
+import * as express from 'express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './core/common/filters/all-exceptions.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Enable CORS for web clients
+  app.enableCors();
+
   // Increase body size limit for large audio payloads
-  app.use(require('express').json({ limit: '50mb' }));
-  app.use(require('express').urlencoded({ limit: '50mb', extended: true }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Return detailed validation errors on bad requests (400)
   app.useGlobalPipes(
@@ -27,4 +31,4 @@ async function bootstrap() {
 
   Logger.log(`Application running on port ${port}`, 'Bootstrap');
 }
-bootstrap();
+void bootstrap();

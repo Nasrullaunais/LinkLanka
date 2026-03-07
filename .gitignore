@@ -6,17 +6,29 @@ coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-lock.yaml
 package-lock.json
 /.pnp/
 .pnp.js
 
 ## pnpm / workspace
-/node_modules/
+node_modules/
 /packages/**/node_modules/
 /apps/**/node_modules/
 
+## Android build artifacts (also covered by apps/mobile/android/.gitignore,
+## but listed here so `git archive` and manual zips stay clean too)
+apps/mobile/android/build/
+apps/mobile/android/app/build/
+apps/mobile/android/app/.cxx/
+apps/mobile/android/.gradle/
+apps/mobile/android/.kotlin/
 
+## API compiled output
+apps/api/dist/
+
+## Runtime upload / audio directories (generated at runtime, not source)
+apps/api/uploads/
+apps/api/audios/
 
 ## Environment
 .env

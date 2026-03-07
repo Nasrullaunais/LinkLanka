@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, LessThan, Repository } from 'typeorm';
 
 import { Message, MessageContentType } from './entities/message.entity';
 import {
@@ -67,6 +67,36 @@ export class ChatService {
     });
   }
 
+  /**
+   * Returns ALL messages for a group in chronological (ASC) order.
+   * Used by the mobile client to eagerly load the full chat history.
+   */
+  async getAllMessages(groupId: string): Promise<Message[]> {
+    return this.messageRepository.find({
+      where: { groupId },
+      order: { createdAt: 'ASC' },
+      relations: ['sender'],
+    });
+  }
+
+  /**
+   * Cursor-based pagination — returns `limit` messages older than the given
+   * cursor (ISO date string). More efficient than page-based for infinite
+   * scroll because it avoids OFFSET scans on large tables.
+   */
+  async getCursorHistory(
+    groupId: string,
+    before: string,
+    limit: number = 30,
+  ): Promise<Message[]> {
+    return this.messageRepository.find({
+      where: { groupId, createdAt: LessThan(new Date(before)) },
+      order: { createdAt: 'DESC' },
+      take: limit,
+      relations: ['sender'],
+    });
+  }
+
   async findMessageById(id: string): Promise<Message | null> {
     return this.messageRepository.findOne({
       where: { id },
@@ -80,6 +110,36 @@ export class ChatService {
     confidenceScore: number,
   ): Promise<Message> {
     await this.messageRepository.update(id, { translations, confidenceScore });
+    return this.messageRepository.findOneOrFail({
+      where: { id },
+      relations: ['sender'],
+    });
+  }
+
+  /**
+   * Phase-2 update: persist translations, confidence score, transcription,
+   * and extracted actions for a message that was already saved in Phase 1.
+   */
+  async updateMessageWithTranslation(
+    id: string,
+    updates: {
+      transcription?: string | null;
+      translations: Translations | null;
+      confidenceScore: number;
+      extractedActions?: ExtractedAction[] | null;
+    },
+  ): Promise<Message> {
+    const updatePayload: Partial<Message> = {
+      translations: updates.translations,
+      confidenceScore: updates.confidenceScore,
+    };
+    if (updates.transcription !== undefined) {
+      updatePayload.transcription = updates.transcription as string;
+    }
+    if (updates.extractedActions !== undefined) {
+      updatePayload.extractedActions = updates.extractedActions ?? null;
+    }
+    await this.messageRepository.update(id, updatePayload);
     return this.messageRepository.findOneOrFail({
       where: { id },
       relations: ['sender'],

@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   Pressable,
   SectionList,
   StyleSheet,
@@ -11,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -55,7 +55,7 @@ function formatRelativeTime(dateStr: string | null): string {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function Avatar({
+const Avatar = memo(function Avatar({
   pictureUrl,
   name,
   size = 46,
@@ -72,6 +72,9 @@ function Avatar({
       <Image
         source={{ uri: pictureUrl }}
         style={{ width: size, height: size, borderRadius }}
+        contentFit="cover"
+        transition={200}
+        recyclingKey={pictureUrl}
       />
     );
   }
@@ -82,7 +85,90 @@ function Avatar({
       </Text>
     </View>
   );
-}
+});
+
+// ── Memoized row components (prevent re-renders when parent state changes) ──
+
+const DmRow = memo(function DmRow({
+  item,
+  onPress,
+  colors,
+}: {
+  item: GroupItem;
+  onPress: (item: GroupItem) => void;
+  colors: any;
+}) {
+  const other = item.otherUser;
+  const name = other?.displayName ?? 'Unknown';
+  return (
+    <Pressable
+      onPress={() => onPress(item)}
+      style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
+    >
+      <Avatar pictureUrl={other?.profilePictureUrl} name={name} fallbackBg={colors.avatarFallbackBg} />
+      <View style={styles.rowContent}>
+        <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{name}</Text>
+        {item.lastMessageAt && (
+          <Text style={[styles.subText, { color: colors.textSecondary }]}>{formatRelativeTime(item.lastMessageAt)}</Text>
+        )}
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.chevronColor} />
+    </Pressable>
+  );
+});
+
+const GroupRow = memo(function GroupRow({
+  item,
+  onPress,
+  colors,
+}: {
+  item: GroupItem;
+  onPress: (item: GroupItem) => void;
+  colors: any;
+}) {
+  return (
+    <Pressable
+      onPress={() => onPress(item)}
+      style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
+    >
+      <View style={[styles.groupAvatar, { backgroundColor: colors.groupAvatarBg }]}>
+        <Ionicons name="people" size={22} color="#fff" />
+      </View>
+      <View style={styles.rowContent}>
+        <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{item.name ?? 'Unnamed group'}</Text>
+        <Text style={[styles.subText, { color: colors.textSecondary }]} numberOfLines={1}>
+          {item.memberCount ?? 0} member{item.memberCount !== 1 ? 's' : ''}
+          {item.lastMessageAt ? ` · ${formatRelativeTime(item.lastMessageAt)}` : ''}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.chevronColor} />
+    </Pressable>
+  );
+});
+
+const UserRow = memo(function UserRow({
+  item,
+  onPress,
+  colors,
+}: {
+  item: UserItem;
+  onPress: (item: UserItem) => void;
+  colors: any;
+}) {
+  return (
+    <Pressable
+      onPress={() => onPress(item)}
+      style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
+    >
+      <Avatar pictureUrl={item.profilePictureUrl} name={item.displayName} fallbackBg={colors.avatarFallbackBg} />
+      <View style={styles.rowContent}>
+        <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{item.displayName}</Text>
+        <Text style={[styles.subText, { color: colors.textSecondary }]} numberOfLines={1}>{item.nativeDialect}</Text>
+      </View>
+      <Ionicons name="chatbubble-outline" size={18} color={colors.chevronColor} />
+    </Pressable>
+  );
+});
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function ChatsListScreen() {
@@ -197,6 +283,7 @@ export default function ChatsListScreen() {
         isDm: true,
         preferredLanguage: item.preferredLanguage,
         otherUserPicture: item.otherUser?.profilePictureUrl,
+        otherUserId: item.otherUser?.id,
       });
     },
     [navigation],
@@ -213,6 +300,7 @@ export default function ChatsListScreen() {
           isDm: true,
           preferredLanguage: group.preferredLanguage,
           otherUserPicture: user.profilePictureUrl,
+          otherUserId: user.id,
         });
       } catch (err) {
         console.error('[ChatsListScreen] Failed to open DM:', err);
@@ -227,63 +315,22 @@ export default function ChatsListScreen() {
 
   // ── Render helpers ───────────────────────────────────────────────────────
   const renderDmRow = useCallback(
-    ({ item }: { item: GroupItem }) => {
-      const other = item.otherUser;
-      const name = other?.displayName ?? 'Unknown';
-      return (
-        <Pressable
-          onPress={() => openDmChat(item)}
-          style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
-        >
-          <Avatar pictureUrl={other?.profilePictureUrl} name={name} fallbackBg={colors.avatarFallbackBg} />
-          <View style={styles.rowContent}>
-            <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{name}</Text>
-            {item.lastMessageAt && (
-              <Text style={[styles.subText, { color: colors.textSecondary }]}>{formatRelativeTime(item.lastMessageAt)}</Text>
-            )}
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.chevronColor} />
-        </Pressable>
-      );
-    },
+    ({ item }: { item: GroupItem }) => (
+      <DmRow item={item} onPress={openDmChat} colors={colors} />
+    ),
     [openDmChat, colors],
   );
 
   const renderGroupRow = useCallback(
     ({ item }: { item: GroupItem }) => (
-      <Pressable
-        onPress={() => openGroupChat(item)}
-        style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
-      >
-        <View style={[styles.groupAvatar, { backgroundColor: colors.groupAvatarBg }]}>
-          <Ionicons name="people" size={22} color="#fff" />
-        </View>
-        <View style={styles.rowContent}>
-          <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{item.name ?? 'Unnamed group'}</Text>
-          <Text style={[styles.subText, { color: colors.textSecondary }]} numberOfLines={1}>
-            {item.memberCount ?? 0} member{item.memberCount !== 1 ? 's' : ''}
-            {item.lastMessageAt ? ` · ${formatRelativeTime(item.lastMessageAt)}` : ''}
-          </Text>
-        </View>
-        <Ionicons name="chevron-forward" size={18} color={colors.chevronColor} />
-      </Pressable>
+      <GroupRow item={item} onPress={openGroupChat} colors={colors} />
     ),
     [openGroupChat, colors],
   );
 
   const renderUserRow = useCallback(
     ({ item }: { item: UserItem }) => (
-      <Pressable
-        onPress={() => openOrCreateDm(item)}
-        style={({ pressed }) => [styles.row, { borderBottomColor: colors.rowBorder }, pressed && { backgroundColor: colors.rowPressed }]}
-      >
-        <Avatar pictureUrl={item.profilePictureUrl} name={item.displayName} fallbackBg={colors.avatarFallbackBg} />
-        <View style={styles.rowContent}>
-          <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>{item.displayName}</Text>
-          <Text style={[styles.subText, { color: colors.textSecondary }]} numberOfLines={1}>{item.nativeDialect}</Text>
-        </View>
-        <Ionicons name="chatbubble-outline" size={18} color={colors.chevronColor} />
-      </Pressable>
+      <UserRow item={item} onPress={openOrCreateDm} colors={colors} />
     ),
     [openOrCreateDm, colors],
   );
@@ -301,7 +348,7 @@ export default function ChatsListScreen() {
       <View style={[styles.header, { paddingTop: insets.top + 12, backgroundColor: colors.headerBg }]}>
         <Pressable onPress={() => navigation.navigate('Profile')} hitSlop={12}>
           {userProfilePicture ? (
-            <Image source={{ uri: userProfilePicture }} style={styles.headerAvatar} />
+            <Image source={{ uri: userProfilePicture }} style={styles.headerAvatar} contentFit="cover" transition={200} />
           ) : (
             <View style={[styles.headerAvatar, { backgroundColor: colors.headerAvatarBg }]}>
               <Text style={[styles.headerAvatarInitials, { color: colors.headerText }]}>
@@ -359,6 +406,10 @@ export default function ChatsListScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.list}
             keyboardShouldPersistTaps="handled"
+            removeClippedSubviews
+            initialNumToRender={10}
+            maxToRenderPerBatch={8}
+            windowSize={7}
           />
         )
       ) : isLoading ? (
@@ -397,6 +448,10 @@ export default function ChatsListScreen() {
           )}
           contentContainerStyle={styles.list}
           stickySectionHeadersEnabled={false}
+          removeClippedSubviews
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={7}
         />
       )}
 
