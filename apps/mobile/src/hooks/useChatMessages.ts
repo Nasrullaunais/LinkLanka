@@ -562,8 +562,8 @@ export function useChatMessages({
         const serverReason = (error as any)?.response?.data?.reason;
         if (serverReason === 'audioNotAudible') {
           Alert.alert(
-            'Audio Not Audible',
-            "Your recording wasn't clear enough to process.\nPlease try again in a quieter environment or speak louder.",
+            'Let us try that again',
+            'We could not hear a clear voice in that clip. Try speaking a little louder or move to a quieter spot.',
           );
           return;
         }

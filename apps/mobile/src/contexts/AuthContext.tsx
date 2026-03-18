@@ -7,7 +7,13 @@ import React, {
   useState,
 } from 'react';
 import { getSecureItem, setSecureItem, deleteSecureItem } from '../utils/secureStorage';
-import { setAuthToken, removeAuthToken, fetchCurrentUser, unregisterPushToken } from '../services/api';
+import {
+  setAuthToken,
+  removeAuthToken,
+  fetchCurrentUser,
+  unregisterPushToken,
+  setUnauthorizedHandler,
+} from '../services/api';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface AuthContextValue {
@@ -45,6 +51,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [userDialect, setUserDialect] = useState<string | null>(null);
   const [userProfilePicture, setUserProfilePicture] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const clearSessionState = useCallback(async () => {
+    await Promise.all([
+      deleteSecureItem('user_display_name'),
+      deleteSecureItem('user_dialect'),
+      deleteSecureItem('user_profile_picture'),
+    ]);
+    setUserToken(null);
+    setUserId(null);
+    setUserDisplayName(null);
+    setUserDialect(null);
+    setUserProfilePicture(null);
+  }, []);
 
   // ── Profile hydration ─────────────────────────────────────────────────────
   const hydrateProfile = useCallback(async () => {
@@ -94,6 +113,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [hydrateProfile]);
 
+  // Register a global callback for expired/invalid JWTs.
+  // Any 401 from an authenticated request clears local auth state,
+  // which sends the user back to the login flow.
+  useEffect(() => {
+    setUnauthorizedHandler(async () => {
+      await clearSessionState();
+    });
+
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, [clearSessionState]);
+
   const login = useCallback(
     async (token: string) => {
       await setAuthToken(token);
@@ -117,17 +149,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Best-effort — don't block logout if the server is unreachable
     }
     await removeAuthToken();
-    await Promise.all([
-      deleteSecureItem('user_display_name'),
-      deleteSecureItem('user_dialect'),
-      deleteSecureItem('user_profile_picture'),
-    ]);
-    setUserToken(null);
-    setUserId(null);
-    setUserDisplayName(null);
-    setUserDialect(null);
-    setUserProfilePicture(null);
-  }, []);
+    await clearSessionState();
+  }, [clearSessionState]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

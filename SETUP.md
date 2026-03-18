@@ -155,6 +155,8 @@ Open VS Code and install these extensions (search by name in the Extensions pane
 > git archive HEAD --format=zip -o LinkLankaV2.zip
 > ```
 > This produces a clean archive containing only files that are tracked by Git.
+>
+> **Note on `.env` files:** `.env` files are intentionally excluded from the archive — they contain secrets and must never be committed. Teammates create them manually using the values provided in [Section 5](#5-set-up-environment-files). The project will not start without them.
 
 > **Windows users — read this before extracting.**
 > The Android project contains deeply nested file paths that exceed Windows' default 260-character path limit. The built-in Windows extractor will fail silently or skip files. Follow the steps below to avoid this.
@@ -237,6 +239,21 @@ EXPO_PUBLIC_API_URL=http://localhost:3000
 ```
 
 > **Note:** Same as above — if you are testing on a physical phone, you must replace `localhost` with your machine's IP address. See [Section 9](#9-running-on-a-physical-device).
+
+---
+
+### 5c. Firebase config files (`google-services.json`)
+
+These files are excluded from the zip (they contain Firebase project credentials) and must be placed manually. You should have received them from the lead developer alongside the zip.
+
+| File | Destination path | Why it's needed |
+|---|---|---|
+| `google-services.json` | `apps/mobile/google-services.json` | **Primary** — referenced by `app.json`. Expo reads this during `pnpm android` and copies it into the Android project. |
+| `google-services.json` | `apps/mobile/android/app/google-services.json` | Read directly by Gradle at build time. Can be the same file as above — just copy it to both locations. |
+
+Both files have identical content. If you only received one copy, place it in `apps/mobile/google-services.json` **and** copy it to `apps/mobile/android/app/google-services.json`.
+
+The Android build will **fail at the Gradle step** if `apps/mobile/android/app/google-services.json` is missing.
 
 ---
 

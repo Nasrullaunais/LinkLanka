@@ -157,6 +157,14 @@ export function NotificationProvider({
         await registerPushToken(token);
         console.log('[NotificationContext] Push token registered:', token);
       } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response
+          ?.status;
+        if (status === 401) {
+          console.warn(
+            '[NotificationContext] Session expired while registering push token. Redirecting to login.',
+          );
+          return;
+        }
         console.error(
           '[NotificationContext] Failed to register push token:',
           error,

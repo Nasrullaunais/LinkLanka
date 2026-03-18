@@ -13,14 +13,22 @@ export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost
 
 const TOKEN_KEY = 'jwt_token';
 
+type UnauthorizedHandler = () => void | Promise<void>;
+
 // In-memory copy so requests made immediately after login never race
 // against SecureStore finishing its async write.
 let _memoryToken: string | null = null;
+let _onUnauthorized: UnauthorizedHandler | null = null;
+let _isHandlingUnauthorized = false;
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 });
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  _onUnauthorized = handler;
+}
 
 // ── Request interceptor ──────────────────────────────────────────────────────
 apiClient.interceptors.request.use(
@@ -30,6 +38,30 @@ apiClient.interceptors.request.use(
     return config;
   },
   (error) => Promise.reject(error),
+);
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const authHeader =
+      error?.config?.headers?.Authorization ??
+      error?.config?.headers?.authorization;
+
+    if (status === 401 && authHeader && !_isHandlingUnauthorized) {
+      _isHandlingUnauthorized = true;
+      void (async () => {
+        try {
+          await removeAuthToken();
+          await _onUnauthorized?.();
+        } finally {
+          _isHandlingUnauthorized = false;
+        }
+      })();
+    }
+
+    return Promise.reject(error);
+  },
 );
 
 // ── Token helpers ────────────────────────────────────────────────────────────

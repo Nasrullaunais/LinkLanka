@@ -571,7 +571,13 @@ function MessageBubble({
   onOpenDocumentInterrogation,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
-  const { selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage } = useChatList();
+  const {
+    selectionMode,
+    selectionModeProgress,
+    selectedIdsMap,
+    highlightedMessageId,
+    preferredLanguage,
+  } = useChatList();
 
   const isOwn = message.senderId === currentUserId;
   const { contentType, rawContent, translations, confidenceScore, isOptimistic, isRetrying } = message;
@@ -729,8 +735,8 @@ function MessageBubble({
   // deselects. Checking the shared value instead of a React boolean means
   // the Pressable can always have an onPress without triggering re-renders.
   const handleTap = useCallback(() => {
-    if (selectionModeProgress.value > 0.5) onPress?.(message.id);
-  }, [selectionModeProgress, message.id, onPress]);
+    if (selectionMode) onPress?.(message.id);
+  }, [selectionMode, message.id, onPress]);
 
   // Stable long-press handler — avoids inline closure recreation.
   const handleLongPressLocal = useCallback(() => {

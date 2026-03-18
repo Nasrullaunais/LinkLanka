@@ -330,6 +330,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         <ChatSkeleton />
       ) : (
         <ChatListProvider
+          selectionMode={selectionMode}
           selectionModeProgress={selectionModeProgress}
           selectedIdsMap={selectedIdsMap}
           highlightedMessageId={highlightedMessageId}

@@ -93,6 +93,11 @@ function SkeletonLine({ width, style }: { width: string | number; style?: object
     opacity: 0.3 + shimmer.value * 0.7,
   }));
 
+  const highlightAnimStyle = useAnimatedStyle(() => ({
+    opacity: shimmer.value,
+    transform: [{ translateX: -40 + shimmer.value * 160 }],
+  }));
+
   return (
     <Animated.View
       style={[
@@ -107,10 +112,7 @@ function SkeletonLine({ width, style }: { width: string | number; style?: object
         style={[
           skeletonStyles.highlight,
           { backgroundColor: colors.skeletonHighlight },
-          useAnimatedStyle(() => ({
-            opacity: shimmer.value,
-            transform: [{ translateX: -40 + shimmer.value * 160 }],
-          })),
+          highlightAnimStyle,
         ]}
       />
     </Animated.View>

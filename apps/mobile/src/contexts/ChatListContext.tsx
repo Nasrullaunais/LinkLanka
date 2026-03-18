@@ -4,6 +4,7 @@ import type { SharedValue } from 'react-native-reanimated';
 type PreferredLanguage = 'english' | 'singlish' | 'tanglish';
 
 interface ChatListContextType {
+  selectionMode: boolean;
   selectionModeProgress: SharedValue<number>;
   selectedIdsMap: SharedValue<Record<string, boolean>>;
   /** SharedValue so highlight changes drive UI-thread animations without JS re-renders. */
@@ -14,6 +15,7 @@ interface ChatListContextType {
 const ChatListContext = createContext<ChatListContextType | null>(null);
 
 export function ChatListProvider({
+  selectionMode,
   selectionModeProgress,
   selectedIdsMap,
   highlightedMessageId,
@@ -21,10 +23,10 @@ export function ChatListProvider({
   children,
 }: ChatListContextType & { children: React.ReactNode }) {
   const value = useMemo(
-    () => ({ selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage }),
+    () => ({ selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage }),
     // selectionModeProgress, selectedIdsMap & highlightedMessageId are stable
     // SharedValue references — their .value changing does NOT recreate this memo.
-    [selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage],
+    [selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage],
   );
 
   return (

@@ -44,6 +44,21 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { Image as Compressor } from 'react-native-compressor';
+import {
+  analyzeAudibility,
+  getBlockedFeedback,
+  getLiveHint,
+  type AudibilityStatus,
+  type FeedbackCopy,
+} from './audioAudibility';
+
+type HintTone = 'neutral' | 'warn' | 'good';
+
+function getHintTone(status: AudibilityStatus): HintTone {
+  if (status === 'good') return 'good';
+  if (status === 'calibrating') return 'neutral';
+  return 'warn';
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ChatPayload {
@@ -85,13 +100,8 @@ const RECORDING_OPTIONS_WITH_METERING: RecordingOptions = {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const WAVEFORM_BARS = 24;
-const SILENCE_THRESHOLD_DB = -40;
 /** Horizontal drag distance (px) needed to trigger swipe-to-cancel. */
 const CANCEL_THRESHOLD = 100;
-const HINT_NEAR_SILENT_DB = -55;
-const HINT_QUIET_DB = -45;
-const HINT_SILENCE_TICKS = 20;
-const HINT_CLEAR_TICKS = 5;
 
 function normaliseDb(db: number): number {
   return Math.max(0, Math.min(1, (db + 60) / 60));
@@ -156,6 +166,7 @@ interface RecordingBarProps {
   isSending: boolean;
   waveform: number[];
   hint: string | null;
+  hintTone: HintTone;
   slideX: SharedValue<number>;
 }
 
@@ -183,7 +194,7 @@ function ProcessingBar({ index, color }: { index: number; color: string }) {
 
 const PROCESSING_BARS = 16;
 
-function RecordingBar({ durationMs, isSending, waveform, hint, slideX }: RecordingBarProps) {
+function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX }: RecordingBarProps) {
   const { colors } = useTheme();
 
   // Cancel hint fades in as the user drags left.
@@ -261,7 +272,14 @@ function RecordingBar({ durationMs, isSending, waveform, hint, slideX }: Recordi
 
       {/* Inline hint for audio quality */}
       {hintVisible && (
-        <Animated.Text style={[styles.recordingHint, hintStyle]}>
+        <Animated.Text
+          style={[
+            styles.recordingHint,
+            hintTone === 'good' ? styles.recordingHintGood : null,
+            hintTone === 'neutral' ? styles.recordingHintNeutral : null,
+            hintStyle,
+          ]}
+        >
           {hint}
         </Animated.Text>
       )}
@@ -342,6 +360,8 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const [showSheet, setShowSheet] = useState(false);
   const [showMagicModal, setShowMagicModal] = useState(false);
   const [recordingHint, setRecordingHint] = useState<string | null>(null);
+  const [recordingHintTone, setRecordingHintTone] = useState<HintTone>('neutral');
+  const [blockedFeedback, setBlockedFeedback] = useState<FeedbackCopy | null>(null);
 
   // ── Sync refs ─────────────────────────────────────────────────────────────
   const isRecordingRef = useRef(false);
@@ -362,9 +382,9 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const durationRef = useRef(0);
   const meteringHistoryRef = useRef<number[]>([]);
   const [waveform, setWaveform] = useState<number[]>(() => Array(WAVEFORM_BARS).fill(0));
-
-  const silentTicksRef = useRef(0);
-  const loudTicksRef = useRef(0);
+  const stableLiveStatusRef = useRef<AudibilityStatus>('calibrating');
+  const candidateLiveStatusRef = useRef<AudibilityStatus>('calibrating');
+  const candidateLiveTicksRef = useRef(0);
 
   // ── Slide-to-cancel shared value ──────────────────────────────────────────
   const slideX = useSharedValue(0);
@@ -388,27 +408,57 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       return next.length > WAVEFORM_BARS ? next.slice(next.length - WAVEFORM_BARS) : next;
     });
 
-    // Real-time audio quality hints
-    if (raw < HINT_NEAR_SILENT_DB) {
-      silentTicksRef.current += 1;
-      loudTicksRef.current = 0;
-      if (silentTicksRef.current >= HINT_SILENCE_TICKS) {
-        setRecordingHint('Move closer to the mic');
-      }
-    } else if (raw < HINT_QUIET_DB) {
-      silentTicksRef.current += 1;
-      loudTicksRef.current = 0;
-      if (silentTicksRef.current >= HINT_SILENCE_TICKS) {
-        setRecordingHint('Speak up');
-      }
-    } else {
-      loudTicksRef.current += 1;
-      silentTicksRef.current = 0;
-      if (loudTicksRef.current >= HINT_CLEAR_TICKS) {
-        setRecordingHint(null);
-      }
+    const analysis = analyzeAudibility(
+      meteringHistoryRef.current,
+      durationRef.current,
+    );
+
+    let nextLiveStatus: AudibilityStatus = analysis.status;
+    if (durationRef.current < 350 || analysis.metrics.sampleCount < 4) {
+      nextLiveStatus = 'calibrating';
+    } else if (nextLiveStatus === 'tooShort') {
+      nextLiveStatus = 'calibrating';
     }
+
+    if (candidateLiveStatusRef.current !== nextLiveStatus) {
+      candidateLiveStatusRef.current = nextLiveStatus;
+      candidateLiveTicksRef.current = 1;
+    } else {
+      candidateLiveTicksRef.current += 1;
+    }
+
+    const requiredTicks = nextLiveStatus === 'good' ? 2 : 3;
+    if (
+      stableLiveStatusRef.current !== candidateLiveStatusRef.current &&
+      candidateLiveTicksRef.current >= requiredTicks
+    ) {
+      stableLiveStatusRef.current = candidateLiveStatusRef.current;
+    }
+
+    setRecordingHint(getLiveHint(stableLiveStatusRef.current));
+    setRecordingHintTone(getHintTone(stableLiveStatusRef.current));
   }, [recorderState.durationMillis, recorderState.metering, isRecording]);
+
+  useEffect(() => {
+    if (!blockedFeedback) return;
+    const timer = setTimeout(() => {
+      setBlockedFeedback(null);
+    }, 5500);
+    return () => clearTimeout(timer);
+  }, [blockedFeedback]);
+
+  const showBlockedFeedback = useMemo(() => {
+    return Boolean(blockedFeedback) && !isRecording && !isSending;
+  }, [blockedFeedback, isRecording, isSending]);
+
+  const dismissBlockedFeedback = useCallback(() => {
+    setBlockedFeedback(null);
+  }, []);
+
+  const showFriendlyBlockFeedback = useCallback((status: AudibilityStatus) => {
+    setBlockedFeedback(getBlockedFeedback(status));
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  }, []);
 
   // ── Reset helper ──────────────────────────────────────────────────────────
   const resetRecordingState = useCallback(() => {
@@ -417,8 +467,10 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     startPromiseRef.current = null;
     setIsRecording(false);
     setRecordingHint(null);
-    silentTicksRef.current = 0;
-    loudTicksRef.current = 0;
+    setRecordingHintTone('neutral');
+    stableLiveStatusRef.current = 'calibrating';
+    candidateLiveStatusRef.current = 'calibrating';
+    candidateLiveTicksRef.current = 0;
     slideX.value = withSpring(0, { damping: 20, stiffness: 300 });
   }, [slideX, isCancelled]);
 
@@ -445,10 +497,13 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
       durationRef.current = 0;
       meteringHistoryRef.current = [];
-      silentTicksRef.current = 0;
-      loudTicksRef.current = 0;
       setWaveform(Array(WAVEFORM_BARS).fill(0));
-      setRecordingHint(null);
+      setBlockedFeedback(null);
+      stableLiveStatusRef.current = 'calibrating';
+      candidateLiveStatusRef.current = 'calibrating';
+      candidateLiveTicksRef.current = 0;
+      setRecordingHint(getLiveHint('calibrating'));
+      setRecordingHintTone(getHintTone('calibrating'));
 
       recorder.record();
       isRecordingRef.current = true;
@@ -504,6 +559,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     }
 
     const capturedDuration = durationRef.current;
+    const meteringHistory = [...meteringHistoryRef.current];
     resetRecordingState();
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
@@ -511,20 +567,16 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       await recorder.stop();
       await AudioModule.setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
 
-      // Discard accidental taps shorter than 400ms
-      if (capturedDuration < 400) return;
-
-      // Client-side silence guard
-      const meteringHistory = meteringHistoryRef.current;
-      if (meteringHistory.length > 0) {
-        const peakDb = Math.max(...meteringHistory);
-        if (peakDb < SILENCE_THRESHOLD_DB) {
-          Alert.alert(
-            'Audio Too Quiet',
-            'Your recording appears to be silent.\nPlease check your microphone and try again.',
-          );
+      const hasEnoughMetering = meteringHistory.length >= 4;
+      if (hasEnoughMetering) {
+        const finalAnalysis = analyzeAudibility(meteringHistory, capturedDuration);
+        if (!finalAnalysis.canSend) {
+          showFriendlyBlockFeedback(finalAnalysis.status);
           return;
         }
+      } else if (capturedDuration < 900) {
+        showFriendlyBlockFeedback('tooShort');
+        return;
       }
 
       const uri = recorder.uri;
@@ -551,7 +603,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     } finally {
       setIsSending(false);
     }
-  }, [recorder, onSendMessage, resetRecordingState, isCancelled]);
+  }, [recorder, onSendMessage, resetRecordingState, isCancelled, showFriendlyBlockFeedback]);
 
   // ── Mic gesture ───────────────────────────────────────────────────────────
   //
@@ -591,6 +643,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const handleSendText = useCallback(() => {
     const trimmed = inputText.trim();
     if (!trimmed) return;
+    setBlockedFeedback(null);
     onSendMessage({ type: 'TEXT', content: trimmed });
     setInputText('');
   }, [inputText, onSendMessage]);
@@ -684,8 +737,24 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
             isSending={isSending}
             waveform={waveform}
             hint={recordingHint}
+            hintTone={recordingHintTone}
             slideX={slideX}
           />
+        )}
+
+        {showBlockedFeedback && blockedFeedback && (
+          <View style={styles.blockedCard}>
+            <View style={styles.blockedCardIconWrap}>
+              <Ionicons name="mic-off-outline" size={16} color="#b45309" />
+            </View>
+            <View style={styles.blockedCardTextWrap}>
+              <Text style={styles.blockedCardTitle}>{blockedFeedback.title}</Text>
+              <Text style={styles.blockedCardMessage}>{blockedFeedback.message}</Text>
+            </View>
+            <Pressable onPress={dismissBlockedFeedback} style={styles.blockedCardAction}>
+              <Text style={styles.blockedCardActionText}>{blockedFeedback.actionLabel}</Text>
+            </Pressable>
+          </View>
         )}
 
         {/* Character count — only in normal mode */}
@@ -939,9 +1008,61 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: -2,
   },
+  recordingHintGood: {
+    color: '#16a34a',
+  },
+  recordingHintNeutral: {
+    color: '#6b7280',
+  },
   recordingBarText: {
     flex: 1,
     fontSize: 13,
+  },
+  blockedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    marginBottom: 8,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    gap: 10,
+  },
+  blockedCardIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fef3c7',
+  },
+  blockedCardTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  blockedCardTitle: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '700',
+    color: '#92400e',
+  },
+  blockedCardMessage: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#a16207',
+  },
+  blockedCardAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#f59e0b',
+  },
+  blockedCardActionText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#ffffff',
   },
   // character count
   charCount: {
