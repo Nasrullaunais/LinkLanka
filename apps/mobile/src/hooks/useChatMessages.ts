@@ -13,6 +13,7 @@ export interface ChatPayload {
   /** Local file URI for AUDIO — allows the optimistic message to play back
    *  the recording from the device before the server URL is available. */
   localUri?: string;
+  durationMs?: number;
 }
 
 // ── Shape broadcasted by the server via "newMessage" ─────────────────────────
@@ -89,6 +90,11 @@ interface MessagesDeletedEvent {
   deletedBy: string;
 }
 
+interface MessagesHiddenEvent {
+  messageIds: string[];
+  hiddenBy: string;
+}
+
 // ── Server → Client broadcast for message edit ────────────────────────────────
 interface MessageEditedEvent {
   messageId: string;
@@ -109,7 +115,43 @@ interface DeleteFailedEvent {
   reason: string;
 }
 
+interface HideFailedEvent {
+  reason: string;
+}
+
 const PAGE_SIZE = 30;
+
+interface MessagePatchContext {
+  messages: ChatMessage[];
+  indexById: Map<string, number>;
+  changed: boolean;
+}
+
+type MessagePatch = (ctx: MessagePatchContext) => void;
+
+function buildMessageIndex(messages: ChatMessage[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (let i = 0; i < messages.length; i += 1) {
+    map.set(messages[i].id, i);
+  }
+  return map;
+}
+
+function updateMessageById(
+  ctx: MessagePatchContext,
+  messageId: string,
+  updater: (current: ChatMessage) => ChatMessage,
+): void {
+  const index = ctx.indexById.get(messageId);
+  if (index == null) return;
+
+  const current = ctx.messages[index];
+  const next = updater(current);
+  if (next === current) return;
+
+  ctx.messages[index] = next;
+  ctx.changed = true;
+}
 
 // ── Mappers ──────────────────────────────────────────────────────────────────
 function historyToChatMessage(msg: HistoryMessage): ChatMessage {
@@ -193,6 +235,8 @@ export function useChatMessages({
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isFetchingOlder, setIsFetchingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const queuedPatchesRef = useRef<MessagePatch[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Track optimistic IDs for reconciliation
   const optimisticIdsRef   = useRef<Set<string>>(new Set());
@@ -201,6 +245,42 @@ export function useChatMessages({
   const oldestCursorRef    = useRef<string | null>(null); // createdAt of oldest loaded msg
   const onNewMessageRef    = useRef<(() => void) | undefined>(onNewMessage);
   useEffect(() => { onNewMessageRef.current = onNewMessage; }, [onNewMessage]);
+
+  const flushQueuedPatches = useCallback(() => {
+    flushTimerRef.current = null;
+    const patches = queuedPatchesRef.current;
+    if (patches.length === 0) return;
+    queuedPatchesRef.current = [];
+
+    setMessages((prev) => {
+      const ctx: MessagePatchContext = {
+        messages: [...prev],
+        indexById: buildMessageIndex(prev),
+        changed: false,
+      };
+      for (const patch of patches) {
+        patch(ctx);
+      }
+      return ctx.changed ? ctx.messages : prev;
+    });
+  }, []);
+
+  const enqueueMessagesPatch = useCallback((patch: MessagePatch) => {
+    queuedPatchesRef.current.push(patch);
+    if (flushTimerRef.current != null) return;
+
+    // Coalesce frequent socket events into one state commit per frame.
+    flushTimerRef.current = setTimeout(flushQueuedPatches, 16);
+  }, [flushQueuedPatches]);
+
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current != null) {
+        clearTimeout(flushTimerRef.current);
+      }
+      queuedPatchesRef.current = [];
+    };
+  }, []);
 
   // ── 1. Fetch most-recent PAGE_SIZE messages on mount ─────────────────────
   useEffect(() => {
@@ -290,23 +370,35 @@ export function useChatMessages({
     const handleNewMessage = (evt: NewMessageEvent) => {
       const finalMessage = serverEventToChatMessage(evt);
 
-      setMessages((prev) => {
+      enqueueMessagesPatch((ctx) => {
         // If the sender is the current user, reconcile the optimistic entry
         if (evt.senderId === userId) {
-          const idx = prev.findIndex(
+          const idx = ctx.messages.findIndex(
             (m) => m.isOptimistic && m.senderId === userId,
           );
 
           if (idx !== -1) {
-            optimisticIdsRef.current.delete(prev[idx].id);
-            const next = [...prev];
-            next[idx] = finalMessage;
-            return next;
+            const optimisticId = ctx.messages[idx].id;
+            optimisticIdsRef.current.delete(optimisticId);
+            ctx.messages[idx] = finalMessage;
+            ctx.indexById.delete(optimisticId);
+            ctx.indexById.set(finalMessage.id, idx);
+            ctx.changed = true;
+            return;
           }
         }
 
         // Otherwise it's from someone else — append at end (ASC order)
-        return [...prev, finalMessage];
+        const existingIndex = ctx.indexById.get(finalMessage.id);
+        if (existingIndex != null) {
+          ctx.messages[existingIndex] = finalMessage;
+          ctx.changed = true;
+          return;
+        }
+
+        ctx.messages.push(finalMessage);
+        ctx.indexById.set(finalMessage.id, ctx.messages.length - 1);
+        ctx.changed = true;
       });
 
       // Notify screen so it can scroll to bottom if the user is already there
@@ -319,46 +411,40 @@ export function useChatMessages({
 
     // ── messageTranslated (Phase 2 — translations arrived) ──────────────
     const handleMessageTranslated = (evt: MessageTranslatedEvent) => {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === evt.messageId
-            ? {
-                ...m,
-                translations: evt.translations,
-                confidenceScore: evt.confidenceScore,
-                extractedActions: evt.extractedActions ?? m.extractedActions,
-                isTranslating: false,
-                isRetrying: false,
-              }
-            : m,
-        ),
-      );
+      enqueueMessagesPatch((ctx) => updateMessageById(ctx, evt.messageId, (m) => ({
+        ...m,
+        translations: evt.translations,
+        confidenceScore: evt.confidenceScore,
+        extractedActions: evt.extractedActions ?? m.extractedActions,
+        isTranslating: false,
+        isRetrying: false,
+      })));
     };
 
     socket.on('messageTranslated', handleMessageTranslated);
 
     // ── translationFailed — show retry button ───────────────────────────
     const handleTranslationFailed = (evt: TranslationFailedEvent) => {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === evt.messageId
-            ? { ...m, isTranslating: false, isRetrying: false }
-            : m,
-        ),
-      );
+      enqueueMessagesPatch((ctx) => updateMessageById(ctx, evt.messageId, (m) => ({
+        ...m,
+        isTranslating: false,
+        isRetrying: false,
+      })));
     };
 
     socket.on('translationFailed', handleTranslationFailed);
 
     // ── messageFailed ───────────────────────────────────────────────────
     const handleMessageFailed = (evt: { reason?: string }) => {
-      setMessages((prev) => {
-        const idx = prev.findIndex((m) => m.isOptimistic && m.senderId === userId);
-        if (idx === -1) return prev;
-        optimisticIdsRef.current.delete(prev[idx].id);
-        const next = [...prev];
-        next.splice(idx, 1);
-        return next;
+      enqueueMessagesPatch((ctx) => {
+        const idx = ctx.messages.findIndex((m) => m.isOptimistic && m.senderId === userId);
+        if (idx === -1) return;
+
+        const optimisticId = ctx.messages[idx].id;
+        optimisticIdsRef.current.delete(optimisticId);
+        ctx.messages.splice(idx, 1);
+        ctx.indexById = buildMessageIndex(ctx.messages);
+        ctx.changed = true;
       });
       Alert.alert(
         'Send Failed',
@@ -371,10 +457,29 @@ export function useChatMessages({
     // ── Delete events ───────────────────────────────────────────────────
     const handleMessagesDeleted = (evt: MessagesDeletedEvent) => {
       const ids = new Set(evt.messageIds);
-      setMessages((prev) => prev.filter((m) => !ids.has(m.id)));
+      enqueueMessagesPatch((ctx) => {
+        const next = ctx.messages.filter((m) => !ids.has(m.id));
+        if (next.length === ctx.messages.length) return;
+        ctx.messages = next;
+        ctx.indexById = buildMessageIndex(next);
+        ctx.changed = true;
+      });
     };
 
     socket.on('messagesDeleted', handleMessagesDeleted);
+
+    const handleMessagesHidden = (evt: MessagesHiddenEvent) => {
+      const ids = new Set(evt.messageIds);
+      enqueueMessagesPatch((ctx) => {
+        const next = ctx.messages.filter((m) => !ids.has(m.id));
+        if (next.length === ctx.messages.length) return;
+        ctx.messages = next;
+        ctx.indexById = buildMessageIndex(next);
+        ctx.changed = true;
+      });
+    };
+
+    socket.on('messagesHidden', handleMessagesHidden);
 
     const handleDeleteFailed = (evt: DeleteFailedEvent) => {
       Alert.alert('Delete Failed', evt?.reason ?? 'Could not delete the message(s). Please try again.');
@@ -382,26 +487,26 @@ export function useChatMessages({
 
     socket.on('deleteFailed', handleDeleteFailed);
 
+    const handleHideFailed = (evt: HideFailedEvent) => {
+      Alert.alert('Hide Failed', evt?.reason ?? 'Could not hide the message(s). Please try again.');
+    };
+
+    socket.on('hideFailed', handleHideFailed);
+
     // ── Edit events ─────────────────────────────────────────────────────
     const handleMessageEdited = (evt: MessageEditedEvent) => {
       if (editOriginalRef.current?.id === evt.messageId) {
         editOriginalRef.current = null;
       }
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === evt.messageId
-            ? {
-                ...m,
-                rawContent: evt.newContent,
-                translations: evt.translations,
-                confidenceScore: evt.confidenceScore,
-                isEdited: true,
-                isRetrying: false,
-                isTranslating: false,
-              }
-            : m,
-        ),
-      );
+      enqueueMessagesPatch((ctx) => updateMessageById(ctx, evt.messageId, (m) => ({
+        ...m,
+        rawContent: evt.newContent,
+        translations: evt.translations,
+        confidenceScore: evt.confidenceScore,
+        isEdited: true,
+        isRetrying: false,
+        isTranslating: false,
+      })));
     };
 
     socket.on('messageEdited', handleMessageEdited);
@@ -409,20 +514,14 @@ export function useChatMessages({
     const handleEditFailed = (evt: EditFailedEvent) => {
       if (editOriginalRef.current && editOriginalRef.current.id === evt.messageId) {
         const snapshot = editOriginalRef.current;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === snapshot.id
-              ? {
-                  ...m,
-                  rawContent: snapshot.rawContent,
-                  translations: snapshot.translations,
-                  confidenceScore: snapshot.confidenceScore,
-                  isRetrying: false,
-                  isTranslating: false,
-                }
-              : m,
-          ),
-        );
+        enqueueMessagesPatch((ctx) => updateMessageById(ctx, snapshot.id, (m) => ({
+          ...m,
+          rawContent: snapshot.rawContent,
+          translations: snapshot.translations,
+          confidenceScore: snapshot.confidenceScore,
+          isRetrying: false,
+          isTranslating: false,
+        })));
         editOriginalRef.current = null;
       }
       Alert.alert('Edit Failed', evt?.reason ?? 'Could not edit the message. Please try again.');
@@ -436,11 +535,13 @@ export function useChatMessages({
       socket.off('translationFailed', handleTranslationFailed);
       socket.off('messageFailed', handleMessageFailed);
       socket.off('messagesDeleted', handleMessagesDeleted);
+      socket.off('messagesHidden', handleMessagesHidden);
       socket.off('deleteFailed', handleDeleteFailed);
+      socket.off('hideFailed', handleHideFailed);
       socket.off('messageEdited', handleMessageEdited);
       socket.off('editFailed', handleEditFailed);
     };
-  }, [socket, isConnected, userId, groupId, editOriginalRef]);
+  }, [socket, isConnected, userId, groupId, editOriginalRef, enqueueMessagesPatch]);
 
   // ── 4. Reconnect catch-up: re-fetch latest page and merge missed messages ─
   const prevConnectedRef = useRef(false);
@@ -488,7 +589,7 @@ export function useChatMessages({
         senderId: userId,
         contentType: payload.type,
         rawContent: payload.type === 'AUDIO'
-          ? (payload.localUri ?? '')
+          ? JSON.stringify({ url: payload.localUri ?? '', durationMs: payload.durationMs ?? 0 })
           : payload.content,
         translations: null,
         confidenceScore: null,
@@ -531,6 +632,7 @@ export function useChatMessages({
             groupId,
             payload.content,
             payload.mimeType ?? 'audio/mp4',
+            payload.durationMs,
           );
         } else if (payload.type === 'DOCUMENT') {
           const { url } = await uploadMedia(
@@ -579,26 +681,35 @@ export function useChatMessages({
   // ── 6. Retry translation handler ──────────────────────────────────────────
   const handleRetry = useCallback(
     async (messageId: string) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, isRetrying: true, translations: null } : m)),
-      );
+      enqueueMessagesPatch((ctx) => updateMessageById(ctx, messageId, (m) => ({
+        ...m,
+        isRetrying: true,
+        translations: null,
+      })));
       try {
         const result = await retranslateMessage(messageId);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId
-              ? { ...m, isRetrying: false, isTranslating: false, translations: result.translations, confidenceScore: result.confidenceScore }
-              : m,
-          ),
-        );
+        enqueueMessagesPatch((ctx) => updateMessageById(ctx, messageId, (m) => ({
+          ...m,
+          isRetrying: false,
+          isTranslating: false,
+          translations: result.translations,
+          confidenceScore: result.confidenceScore,
+        })));
       } catch (err) {
         console.error('[useChatMessages] Retranslation failed:', err);
-        setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, isRetrying: false } : m)),
+        enqueueMessagesPatch((ctx) => updateMessageById(ctx, messageId, (m) => ({
+          ...m,
+          isRetrying: false,
+        })));
+        const responseMessage = (err as any)?.response?.data?.message;
+        const responseReason = (err as any)?.response?.data?.reason;
+        Alert.alert(
+          'Retry Failed',
+          responseMessage ?? responseReason ?? 'Translation retry failed. Please try again.',
         );
       }
     },
-    [],
+    [enqueueMessagesPatch],
   );
 
   return {

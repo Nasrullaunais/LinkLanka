@@ -60,6 +60,11 @@ interface DeleteMessagesPayload {
   messageIds: string[];
 }
 
+interface HideMessagesPayload {
+  groupId: string;
+  messageIds: string[];
+}
+
 interface EditMessagePayload {
   groupId: string;
   messageId: string;
@@ -632,7 +637,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     try {
-      await this.chatService.deleteMessages(messageIds, userId);
+      await this.chatService.deleteMessages(messageIds, userId, groupId);
       this.server
         .to(groupId)
         .emit('messagesDeleted', { messageIds, deletedBy: userId });
@@ -643,6 +648,52 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const reason = error instanceof Error ? error.message : 'Delete failed';
       this.logger.warn(`[deleteMessages] failed: ${reason}`);
       client.emit('deleteFailed', { reason });
+    }
+  }
+
+  @UseGuards(WsJwtGuard)
+  @SubscribeMessage('hideMessages')
+  async handleHideMessages(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: HideMessagesPayload,
+  ): Promise<void> {
+    const authenticatedClient = client as AuthenticatedSocket;
+    const userId: string | undefined = authenticatedClient.user?.sub;
+    if (!userId) throw new WsException('Unauthorized');
+
+    const { groupId, messageIds } = payload ?? {};
+
+    if (
+      typeof groupId !== 'string' ||
+      groupId.trim().length === 0 ||
+      !Array.isArray(messageIds) ||
+      messageIds.length === 0
+    ) {
+      client.emit('hideFailed', {
+        reason:
+          'Invalid payload: groupId and a non-empty messageIds[] are required',
+      });
+      return;
+    }
+
+    const isMember = await this.groupsService.isMember(groupId, userId);
+    if (!isMember) {
+      client.emit('hideFailed', {
+        reason: 'Forbidden: you are not a member of this group',
+      });
+      return;
+    }
+
+    try {
+      await this.chatService.hideMessagesForUser(messageIds, userId, groupId);
+      client.emit('messagesHidden', { messageIds, hiddenBy: userId });
+      this.logger.log(
+        `[hideMessages] ${messageIds.length} message(s) hidden by userId=${userId} in groupId=${groupId}`,
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Hide failed';
+      this.logger.warn(`[hideMessages] failed: ${reason}`);
+      client.emit('hideFailed', { reason });
     }
   }
 

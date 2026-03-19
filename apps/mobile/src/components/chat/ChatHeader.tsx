@@ -92,15 +92,15 @@ function ChatHeader({
     );
   };
 
-  // ── Delete eligibility — all own, non-optimistic ────────────────────────
+  // ── Delete eligibility — any persisted selected messages ────────────────
   const renderDeleteButton = () => {
     const ids = [...selectedIdsRef.current];
     if (ids.length === 0) return null;
-    const allOwn = ids.every((id) => {
+    const allPersisted = ids.every((id) => {
       const msg = messagesRef.current.find((m) => m.id === id);
-      return msg?.senderId === userId && !msg?.isOptimistic;
+      return !!msg && !msg.isOptimistic;
     });
-    if (!allOwn) return null;
+    if (!allPersisted) return null;
     return (
       <Pressable onPress={onDelete} hitSlop={12} style={styles.selHeaderAction}>
         <Ionicons name="trash-outline" size={22} color={colors.destructiveLight} />

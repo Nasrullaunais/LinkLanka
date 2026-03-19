@@ -21,8 +21,11 @@ import { APP_GUARD } from '@nestjs/core';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true, // Makes .env available everywhere
-      // Traverse up from apps/api/dist to the monorepo root
-      envFilePath: path.resolve(process.cwd(), '../../.env'),
+      // Support both running from apps/api and monorepo root.
+      envFilePath: [
+        path.resolve(process.cwd(), '.env'),
+        path.resolve(process.cwd(), '../../.env'),
+      ],
     }),
     // Global rate-limiter storage: 500 req / 60 s default;
     // individual routes can override via @Throttle().

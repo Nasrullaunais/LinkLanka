@@ -5,6 +5,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -18,7 +19,10 @@ import { ChatService } from './chat.service';
 import { Message, MessageContentType } from './entities/message.entity';
 import { GroupsService } from '../groups/groups.service';
 import { PersonalContextService } from '../personal-context/personal-context.service';
-import { TranslationService, Translations } from '../translation/translation.service';
+import {
+  TranslationService,
+  Translations,
+} from '../translation/translation.service';
 
 interface AuthRequest {
   user: { sub: string; email: string };
@@ -27,6 +31,8 @@ interface AuthRequest {
 @Controller('chat')
 @UseGuards(JwtAuthGuard)
 export class ChatController {
+  private readonly logger = new Logger(ChatController.name);
+
   constructor(
     private readonly chatService: ChatService,
     private readonly groupsService: GroupsService,
@@ -43,12 +49,15 @@ export class ChatController {
     @Request() req?: AuthRequest,
   ): Promise<Message[]> {
     const isMember = await this.groupsService.isMember(groupId, req!.user.sub);
-    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
+    if (!isMember) {
+      throw new ForbiddenException('You are not a member of this conversation');
+    }
 
     // If a cursor is provided, use cursor-based pagination (infinite scroll)
     if (before) {
       return this.chatService.getCursorHistory(
         groupId,
+        req!.user.sub,
         before,
         parseInt(limit, 10) || 30,
       );
@@ -56,6 +65,7 @@ export class ChatController {
 
     return this.chatService.getPaginatedHistory(
       groupId,
+      req!.user.sub,
       parseInt(page, 10) || 1,
       parseInt(limit, 10) || 50,
     );
@@ -67,8 +77,10 @@ export class ChatController {
     @Request() req?: AuthRequest,
   ): Promise<Message[]> {
     const isMember = await this.groupsService.isMember(groupId, req!.user.sub);
-    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
-    return this.chatService.getAllMessages(groupId);
+    if (!isMember) {
+      throw new ForbiddenException('You are not a member of this conversation');
+    }
+    return this.chatService.getAllMessages(groupId, req!.user.sub);
   }
 
   @Post('messages/:messageId/retranslate')
@@ -82,46 +94,73 @@ export class ChatController {
     if (!message) throw new NotFoundException('Message not found');
 
     const isMember = await this.groupsService.isMember(message.groupId, userId);
-    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
+    if (!isMember) {
+      throw new ForbiddenException('You are not a member of this conversation');
+    }
 
-    const userDictionary = await this.personalContextService.getUserDictionary(userId);
+    const userDictionary =
+      await this.personalContextService.getUserDictionary(userId);
 
-    let result;
+    let result: { translations: Translations; confidenceScore: number };
 
-    if (message.contentType === MessageContentType.TEXT) {
-      result = await this.translationService.translateIntent({
-        rawText: message.rawContent,
-        chatHistory: [],
-        userDictionary,
-      });
-    } else if (message.contentType === MessageContentType.AUDIO) {
-      // rawContent is the saved audio file URL; derive the local path
-      const fileName = message.rawContent.split('/').pop()!;
-      const localFilePath = path.join(process.cwd(), 'uploads', fileName);
-      const audioBase64 = await fs.promises.readFile(localFilePath, { encoding: 'base64' });
-      // Guess mime type from extension
-      const ext = fileName.split('.').pop()?.toLowerCase() ?? 'm4a';
-      const audioMimeType = ext === 'webm' ? 'audio/webm' : ext === 'ogg' ? 'audio/ogg' : `audio/${ext}`;
-      result = await this.translationService.translateIntent({
-        audioBase64,
-        audioMimeType,
-        chatHistory: [],
-        userDictionary,
-      });
-    } else {
-      // IMAGE / DOCUMENT: rawContent is the URL, derive local path
-      const fileName = message.rawContent.split('/').pop()!;
-      const localFilePath = path.join(process.cwd(), 'uploads', fileName);
-      const ext = fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
-      const fileMimeType =
-        ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
-      result = await this.translationService.translateIntent({
-        localFilePath,
-        fileMimeType,
-        rawText: message.transcription ?? undefined,
-        chatHistory: [],
-        userDictionary,
-      });
+    try {
+      if (message.contentType === MessageContentType.TEXT) {
+        result = await this.translationService.translateIntent({
+          rawText: message.rawContent,
+          chatHistory: [],
+          userDictionary,
+        });
+      } else if (message.contentType === MessageContentType.AUDIO) {
+        // rawContent is the saved audio file URL; derive the local path
+        const fileName = message.rawContent.split('/').pop()!;
+        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
+        const audioBase64 = await fs.promises.readFile(localFilePath, {
+          encoding: 'base64',
+        });
+
+        // Keep retry MIME behavior aligned with AudioController.
+        const ext = fileName.split('.').pop()?.toLowerCase() ?? 'm4a';
+        const audioMimeType =
+          ext === 'm4a'
+            ? 'audio/mp4'
+            : ext === 'webm'
+              ? 'audio/webm'
+              : ext === 'ogg'
+                ? 'audio/ogg'
+                : `audio/${ext}`;
+
+        result = await this.translationService.translateIntent({
+          audioBase64,
+          audioMimeType,
+          chatHistory: [],
+          userDictionary,
+        });
+      } else {
+        // IMAGE / DOCUMENT: rawContent is the URL, derive local path
+        const fileName = message.rawContent.split('/').pop()!;
+        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
+        const ext = fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
+        const fileMimeType =
+          ext === 'pdf'
+            ? 'application/pdf'
+            : ext === 'png'
+              ? 'image/png'
+              : ext === 'gif'
+                ? 'image/gif'
+                : 'image/jpeg';
+        result = await this.translationService.translateIntent({
+          localFilePath,
+          fileMimeType,
+          rawText: message.transcription ?? undefined,
+          chatHistory: [],
+          userDictionary,
+        });
+      }
+    } catch (error) {
+      this.logger.error(
+        `[retranslateMessage] Failed for messageId=${messageId}, type=${message.contentType}, rawContent=${message.rawContent}: ${String(error)}`,
+      );
+      throw error;
     }
 
     await this.chatService.updateMessageTranslations(
@@ -130,7 +169,10 @@ export class ChatController {
       result.confidenceScore,
     );
 
-    return { translations: result.translations, confidenceScore: result.confidenceScore };
+    return {
+      translations: result.translations,
+      confidenceScore: result.confidenceScore,
+    };
   }
 
   @Get('groups/:groupId/search')
@@ -148,14 +190,16 @@ export class ChatController {
     }
 
     const isMember = await this.groupsService.isMember(groupId, userId);
-    if (!isMember) throw new ForbiddenException('You are not a member of this conversation');
+    if (!isMember) {
+      throw new ForbiddenException('You are not a member of this conversation');
+    }
 
     return this.chatService.searchMessages(
       groupId,
+      userId,
       query.trim(),
       parseInt(page, 10) || 1,
       parseInt(limit, 10) || 20,
     );
   }
 }
-

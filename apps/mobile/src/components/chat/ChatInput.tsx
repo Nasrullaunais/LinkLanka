@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -68,6 +69,8 @@ interface ChatPayload {
   /** Local file URI — only set for AUDIO; used by the optimistic message to
    *  load playback from the device before the server URL is available. */
   localUri?: string;
+  /** Track duration in milliseconds (set for AUDIO msg) */
+  durationMs?: number;
 }
 
 interface ChatInputProps {
@@ -102,6 +105,8 @@ const RECORDING_OPTIONS_WITH_METERING: RecordingOptions = {
 const WAVEFORM_BARS = 24;
 /** Horizontal drag distance (px) needed to trigger swipe-to-cancel. */
 const CANCEL_THRESHOLD = 100;
+/** Vertical drag distance (px) needed to trigger lock-to-record. */
+const LOCK_THRESHOLD = 60;
 
 function normaliseDb(db: number): number {
   return Math.max(0, Math.min(1, (db + 60) / 60));
@@ -160,10 +165,35 @@ const SlideHintChevrons = React.memo(function SlideHintChevrons() {
   );
 });
 
+const LockHintChevron = React.memo(function LockHintChevron() {
+  const translateY = useSharedValue(0);
+  useEffect(() => {
+    translateY.value = withRepeat(
+      withSequence(
+        withTiming(-6, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+  }, [translateY]);
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
+  return (
+    <Animated.View style={[styles.chevronCol, animStyle]}>
+      <Ionicons name="chevron-up" size={14} color="#9ca3af" />
+    </Animated.View>
+  );
+});
+
 // ── Recording bar ─────────────────────────────────────────────────────────────
 interface RecordingBarProps {
   durationMs: number;
   isSending: boolean;
+  isLocked: boolean;
+  onCancel: () => void;
+  onSend: () => void;
   waveform: number[];
   hint: string | null;
   hintTone: HintTone;
@@ -194,7 +224,7 @@ function ProcessingBar({ index, color }: { index: number; color: string }) {
 
 const PROCESSING_BARS = 16;
 
-function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX }: RecordingBarProps) {
+function RecordingBar({ durationMs, isSending, isLocked, onCancel, onSend, waveform, hint, hintTone, slideX }: RecordingBarProps) {
   const { colors } = useTheme();
 
   // Cancel hint fades in as the user drags left.
@@ -207,21 +237,6 @@ function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX 
     opacity: interpolate(slideX.value, [0, -CANCEL_THRESHOLD * 0.3], [1, 0], 'clamp'),
   }));
 
-  // Hint text fades in/out.
-  const [hintVisible, setHintVisible] = useState(false);
-  const hintOpacity = useSharedValue(0);
-  useEffect(() => {
-    if (hint) {
-      setHintVisible(true);
-      hintOpacity.value = withTiming(1, { duration: 300 });
-    } else {
-      hintOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
-        if (finished) runOnJS(setHintVisible)(false);
-      });
-    }
-  }, [hint, hintOpacity]);
-  const hintStyle = useAnimatedStyle(() => ({ opacity: hintOpacity.value }));
-
   if (isSending) {
     return (
       <View style={[styles.recordingBar, { backgroundColor: colors.recordingBarBg }]}>
@@ -231,6 +246,35 @@ function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX 
           ))}
         </View>
         <Text style={[styles.recordingBarText, { color: colors.recordingText }]}>Processing…</Text>
+      </View>
+    );
+  }
+
+  if (isLocked && !isSending) {
+    return (
+      <View style={[styles.recordingBar, styles.recordingPill, { backgroundColor: colors.inputBg, borderColor: colors.inputBorder }]}>
+        <Pressable onPress={onCancel} style={styles.pillDeleteBtn}>
+          <Ionicons name="trash-outline" size={20} color="#ef4444" />
+        </Pressable>
+
+        <View style={styles.recordingLeftSection}>
+          <PulsingDot />
+          <Text style={[styles.recordingTimer, { color: colors.recordingText }]}>
+            {formatDuration(durationMs)}
+          </Text>
+        </View>
+
+        <View style={styles.miniWaveformContainerLocked}>
+          {waveform.slice(-16).map((level, i) => {
+            const barH = Math.max(3, Math.round(level * 22));
+            const opacity = 0.4 + (i / 15) * 0.6;
+            return <View key={i} style={[styles.liveBar, { height: barH, opacity, backgroundColor: colors.primary }]} />;
+          })}
+        </View>
+
+        <Pressable onPress={onSend} style={styles.pillSendBtn}>
+          <Ionicons name="send" size={18} color="#fff" />
+        </Pressable>
       </View>
     );
   }
@@ -247,10 +291,12 @@ function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX 
 
       {/* Center: slide-to-cancel hint */}
       <View style={styles.recordingCenterSection}>
-        {/* Default: animated "slide to cancel" hint */}
+        {/* Default: animated "slide to cancel" and lock hints */}
         <Animated.View style={[styles.slideHintContainer, slideHintStyle]}>
           <SlideHintChevrons />
           <Text style={styles.slideHintText}>Slide to cancel</Text>
+          <View style={{ width: 8 }} />
+          <LockHintChevron />
         </Animated.View>
         {/* As user drags: cancel confirmation */}
         <Animated.View style={[styles.cancelConfirmContainer, cancelHintStyle]}>
@@ -269,20 +315,6 @@ function RecordingBar({ durationMs, isSending, waveform, hint, hintTone, slideX 
           );
         })}
       </View>
-
-      {/* Inline hint for audio quality */}
-      {hintVisible && (
-        <Animated.Text
-          style={[
-            styles.recordingHint,
-            hintTone === 'good' ? styles.recordingHintGood : null,
-            hintTone === 'neutral' ? styles.recordingHintNeutral : null,
-            hintStyle,
-          ]}
-        >
-          {hint}
-        </Animated.Text>
-      )}
     </View>
   );
 }
@@ -350,12 +382,60 @@ function AttachSheet({ visible, onClose, onCamera, onGallery, onDocument, bottom
   );
 }
 
+function FloatingHint({ hint, hintTone }: { hint: string | null; hintTone: HintTone }) {
+  const [hintVisible, setHintVisible] = useState(false);
+  const hintOpacity = useSharedValue(0);
+  const hintScale = useSharedValue(0.8);
+  const hintTranslateY = useSharedValue(10);
+
+  useEffect(() => {
+    if (hint) {
+      setHintVisible(true);
+      hintOpacity.value = withTiming(1, { duration: 300 });
+      hintScale.value = withSpring(1, { damping: 15, stiffness: 200 });
+      hintTranslateY.value = withSpring(0, { damping: 15, stiffness: 200 });
+    } else {
+      hintOpacity.value = withTiming(0, { duration: 200 }, (finished) => {
+        if (finished) runOnJS(setHintVisible)(false);
+      });
+      hintScale.value = withTiming(0.8, { duration: 200 });
+      hintTranslateY.value = withTiming(10, { duration: 200 });
+    }
+  }, [hint, hintOpacity, hintScale, hintTranslateY]);
+
+  const hintStyle = useAnimatedStyle(() => ({
+    opacity: hintOpacity.value,
+    transform: [
+      { scale: hintScale.value },
+      { translateY: hintTranslateY.value }
+    ]
+  }));
+
+  if (!hintVisible) return null;
+
+  return (
+    <Animated.View style={[styles.floatingHintContainer, hintStyle]}>
+      <Text
+        style={[
+          styles.floatingHintText,
+          hintTone === 'good' ? styles.floatingHintTextGood : null,
+          hintTone === 'neutral' ? styles.floatingHintTextNeutral : null,
+        ]}
+      >
+        {hint}
+      </Text>
+    </Animated.View>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const [inputText, setInputText] = useState('');
+  const [androidKeyboardOffset, setAndroidKeyboardOffset] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [showSheet, setShowSheet] = useState(false);
   const [showMagicModal, setShowMagicModal] = useState(false);
@@ -386,11 +466,21 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const candidateLiveStatusRef = useRef<AudibilityStatus>('calibrating');
   const candidateLiveTicksRef = useRef(0);
 
-  // ── Slide-to-cancel shared value ──────────────────────────────────────────
+  // ── Slide-to-cancel & Slide-to-lock shared values ───────────────────────────
   const slideX = useSharedValue(0);
-  const micBtnAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: Math.min(0, slideX.value) }],
-  }));
+  const slideY = useSharedValue(0);
+  const isLockEngaged = useSharedValue(0);
+
+  const micBtnAnimStyle = useAnimatedStyle(() => {
+    // If locked, we don't translate the button because the button is replaced by pills.
+    if (isLockEngaged.value === 1) return { transform: [] };
+    return {
+      transform: [
+        { translateX: Math.min(0, slideX.value) },
+        { translateY: Math.min(0, slideY.value) },
+      ],
+    };
+  });
 
   // ── Metering + real-time hints ────────────────────────────────────────────
   useEffect(() => {
@@ -455,6 +545,24 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     setBlockedFeedback(null);
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
+      const keyboardHeight = event.endCoordinates?.height ?? 0;
+      setAndroidKeyboardOffset(Math.max(0, keyboardHeight - insets.bottom));
+    });
+
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setAndroidKeyboardOffset(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [insets.bottom]);
+
   const showFriendlyBlockFeedback = useCallback((status: AudibilityStatus) => {
     setBlockedFeedback(getBlockedFeedback(status));
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -464,15 +572,17 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const resetRecordingState = useCallback(() => {
     isRecordingRef.current = false;
     isCancelled.value = 0;
+    isLockEngaged.value = 0;
     startPromiseRef.current = null;
     setIsRecording(false);
+    setIsLocked(false);
     setRecordingHint(null);
     setRecordingHintTone('neutral');
     stableLiveStatusRef.current = 'calibrating';
     candidateLiveStatusRef.current = 'calibrating';
     candidateLiveTicksRef.current = 0;
     slideX.value = withSpring(0, { damping: 20, stiffness: 300 });
-  }, [slideX, isCancelled]);
+  }, [slideX, isCancelled, isLockEngaged]);
 
   // ── Audio: Start ─────────────────────────────────────────────────────────
   const doStartRecording = useCallback(async () => {
@@ -518,6 +628,8 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
   /** Wrapper that stores the start promise for stop to await. */
   const handleStartRecording = useCallback(() => {
+    Keyboard.dismiss();
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     isCancelled.value = 0;
     startPromiseRef.current = doStartRecording();
   }, [doStartRecording, isCancelled]);
@@ -596,7 +708,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         return;
       }
 
-      onSendMessage({ type: 'AUDIO', content: base64, mimeType, localUri: uri });
+      onSendMessage({ type: 'AUDIO', content: base64, mimeType, localUri: uri, durationMs: capturedDuration });
     } catch (error) {
       console.error('[ChatInput] Failed to process recording:', error);
       Alert.alert('Recording Error', 'Could not process the recorded audio.');
@@ -604,6 +716,11 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       setIsSending(false);
     }
   }, [recorder, onSendMessage, resetRecordingState, isCancelled, showFriendlyBlockFeedback]);
+
+  const handleLockRecording = useCallback(() => {
+    setIsLocked(true);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, []);
 
   // ── Mic gesture ───────────────────────────────────────────────────────────
   //
@@ -618,26 +735,37 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       .minDistance(0)
       .onStart(() => {
         isCancelled.value = 0;
+        isLockEngaged.value = 0;
         runOnJS(handleStartRecording)();
       })
       .onUpdate((e) => {
+        if (isLockEngaged.value === 1) return;
+
         slideX.value = Math.min(0, e.translationX);
+        slideY.value = Math.min(0, e.translationY); // Slide up to lock
 
         // Past cancel threshold → cancel
         if (e.translationX < -CANCEL_THRESHOLD && isCancelled.value === 0) {
           isCancelled.value = 1;
           runOnJS(handleCancelRecording)();
+        } 
+        // Past lock threshold → lock
+        else if (e.translationY < -LOCK_THRESHOLD && isLockEngaged.value === 0 && isCancelled.value === 0) {
+          isLockEngaged.value = 1;
+          runOnJS(handleLockRecording)();
         }
       })
       .onEnd(() => {
-        if (isCancelled.value === 0) {
+        // If they released the finger AND didn't lock, stop recording
+        if (isCancelled.value === 0 && isLockEngaged.value === 0) {
           runOnJS(handleStopRecording)();
         }
       })
       .onFinalize(() => {
         slideX.value = withSpring(0, { damping: 20, stiffness: 300 });
+        slideY.value = withSpring(0, { damping: 20, stiffness: 300 });
       });
-  }, [slideX, isCancelled, handleStartRecording, handleStopRecording, handleCancelRecording]);
+  }, [slideX, slideY, isCancelled, isLockEngaged, handleStartRecording, handleStopRecording, handleCancelRecording, handleLockRecording]);
 
   // ── Text send ────────────────────────────────────────────────────────────
   const handleSendText = useCallback(() => {
@@ -729,12 +857,30 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
   return (
     <>
-      <View style={[styles.wrapper, { paddingBottom: insets.bottom + 6, backgroundColor: colors.inputWrapperBg, borderTopColor: colors.inputBorder }]}>
+      <View style={[styles.wrapper, {
+        paddingBottom: insets.bottom + 6,
+        marginBottom: Platform.OS === 'android' ? androidKeyboardOffset : 0,
+        backgroundColor: colors.inputWrapperBg,
+        borderTopColor: colors.inputBorder,
+      }]}>
+        
+        {/* Floating Hint Pill */}
+        <FloatingHint hint={recordingHint} hintTone={recordingHintTone} />
+
         {/* Recording / processing bar */}
         {showRecordingBar && (
           <RecordingBar
             durationMs={recorderState.durationMillis ?? 0}
             isSending={isSending}
+            isLocked={isLocked}
+            onCancel={() => {
+              isCancelled.value = 1;
+              handleCancelRecording();
+            }}
+            onSend={() => {
+              isCancelled.value = 0;
+              handleStopRecording();
+            }}
             waveform={waveform}
             hint={recordingHint}
             hintTone={recordingHintTone}
@@ -764,7 +910,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
           </Text>
         )}
 
-        <View style={[styles.container, { backgroundColor: colors.inputBg }]}>
+        <View style={[styles.container, { backgroundColor: colors.inputBg, display: isLocked ? 'none' : 'flex' }]}>
           {/* Attachment — hidden while recording/sending */}
           {!showRecordingBar && (
             <Pressable
@@ -919,7 +1065,7 @@ const styles = StyleSheet.create({
   },
   // ── Input hidden state while recording
   inputHidden: {
-    opacity: 0,
+    display: 'none',
   },
   // ── Recording bar
   recordingBar: {
@@ -929,6 +1075,36 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     gap: 8,
     minHeight: 36,
+  },
+  recordingPill: {
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    justifyContent: 'space-between',
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+  },
+  pillDeleteBtn: {
+    padding: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: 20,
+  },
+  pillSendBtn: {
+    padding: 8,
+    backgroundColor: '#0ea5e9',
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniWaveformContainerLocked: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    height: 24,
+    gap: 2,
+    marginHorizontal: 8,
+    justifyContent: 'center',
   },
   recordingLeftSection: {
     flexDirection: 'row',
@@ -962,6 +1138,10 @@ const styles = StyleSheet.create({
   },
   chevronRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chevronCol: {
+    flexDirection: 'column',
     alignItems: 'center',
   },
   slideHintText: {
@@ -1000,19 +1180,26 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: '#ef4444',
   },
-  recordingHint: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#f59e0b',
+  floatingHintContainer: {
     position: 'absolute',
-    right: 0,
-    bottom: -2,
+    top: -46, // Float nicely above the input area
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 100,
   },
-  recordingHintGood: {
-    color: '#16a34a',
+  floatingHintText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fbbf24', // Amber/warning as default
   },
-  recordingHintNeutral: {
-    color: '#6b7280',
+  floatingHintTextGood: {
+    color: '#4ade80', // Green
+  },
+  floatingHintTextNeutral: {
+    color: '#d1d5db', // Gray
   },
   recordingBarText: {
     flex: 1,

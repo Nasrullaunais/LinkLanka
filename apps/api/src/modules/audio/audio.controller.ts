@@ -30,6 +30,8 @@ interface ProcessAudioDto {
   audioMimeType?: unknown;
   /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
   timezone?: unknown;
+  /** Audio track duration in milliseconds */
+  durationMs?: unknown;
 }
 
 /** Shape returned to the caller on success (Phase 1 — immediate response) */
@@ -129,11 +131,14 @@ export class AudioController {
     );
 
     // ── 4. Persist raw message (Phase 1 — no transcription/translation) ──
+    const durationMs = typeof body.durationMs === 'number' ? body.durationMs : 0;
+    const rawContent = durationMs > 0 ? JSON.stringify({ url: fileUrl, durationMs }) : fileUrl;
+
     const message = await this.chatService.saveMessage(
       userId,
       groupId,
       MessageContentType.AUDIO,
-      fileUrl,
+      rawContent,
       null, // transcription — filled in Phase 2
       null, // translations — filled in Phase 2
       null, // confidenceScore — filled in Phase 2
@@ -149,7 +154,7 @@ export class AudioController {
       messageId: message.id,
       senderId: userId,
       contentType: MessageContentType.AUDIO,
-      fileUrl,
+      fileUrl: rawContent, // We send the JSON text or url so clients parsing it works
       transcription: null,
       originalText: null,
       translations: null,
@@ -222,7 +227,7 @@ export class AudioController {
 
     // ── Audibility gate ───────────────────────────────────────────────────
     const appearsInaudible =
-      confidenceScore <= 25 ||
+      (confidenceScore !== null && confidenceScore <= 25) ||
       !transcription ||
       transcription.trim().length === 0;
 
@@ -230,8 +235,29 @@ export class AudioController {
       this.logger.warn(
         `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
       );
-      // Broadcast failure so the client can show an error indicator on the bubble
-      this.chatGateway.broadcastTranslationFailed(groupId, messageId);
+      
+      const inaudibleScore = confidenceScore ?? 0;
+
+      // Persist as inaudible instead of bailing
+      await this.chatService.updateMessageWithTranslation(messageId, {
+        transcription: null,
+        translations: null,
+        confidenceScore: inaudibleScore,
+        extractedActions: null,
+      });
+
+      this.chatGateway.broadcastTranslationUpdate(
+        groupId,
+        userId,
+        {
+          messageId,
+          transcription: null,
+          translations: null,
+          confidenceScore: inaudibleScore,
+          extractedActions: null,
+        },
+        '',
+      );
       return;
     }
 

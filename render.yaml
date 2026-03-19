@@ -1,0 +1,34 @@
+databases:
+  - name: linklanka-demo-db
+    databaseName: linklanka_db
+    user: linklanka_admin
+
+services:
+  - type: web
+    name: linklanka-api-demo
+    env: node
+    plan: free
+    rootDir: apps/api
+    buildCommand: corepack enable && corepack prepare pnpm@10.28.2 --activate && pnpm install --frozen-lockfile && pnpm run build
+    startCommand: node dist/main
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PORT
+        value: "3000"
+      - key: BASE_URL
+        value: https://linklanka-api-demo.onrender.com
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: linklanka-demo-db
+          property: connectionString
+      - key: DB_SSL
+        value: "true"
+      - key: DB_SYNCHRONIZE
+        value: "true"

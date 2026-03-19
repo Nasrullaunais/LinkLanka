@@ -81,11 +81,20 @@ export function useChatEdit({
       }
 
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === editingMessageId
-            ? { ...m, rawContent: trimmed, translations: null, confidenceScore: null, isRetrying: true, isEdited: true }
-            : m,
-        ),
+        {
+          const index = prev.findIndex((m) => m.id === editingMessageId);
+          if (index === -1) return prev;
+          const next = [...prev];
+          next[index] = {
+            ...next[index],
+            rawContent: trimmed,
+            translations: null,
+            confidenceScore: null,
+            isRetrying: true,
+            isEdited: true,
+          };
+          return next;
+        },
       );
 
       setEditingMessageId(null);

@@ -226,11 +226,13 @@ const AudioPlayer = memo(function AudioPlayer({
   isOwn,
   sentAt,
   messageId,
+  initialDurationMs = 0,
 }: {
   uri: string;
   isOwn: boolean;
   sentAt?: string;
   messageId: string;
+  initialDurationMs?: number;
 }) {
   const { colors } = useTheme();
   const normalizedUri = normalizeAudioUri(uri);
@@ -254,12 +256,13 @@ const AudioPlayer = memo(function AudioPlayer({
   );
 
   // ── Time label — updates once per second, ONLY for the active bubble ───
-  const [timeLabel, setTimeLabel] = useState('0:00');
+  const defaultLabel = initialDurationMs > 0 ? formatAudioTime(initialDurationMs / 1000) : '0:00';
+  const [timeLabel, setTimeLabel] = useState(defaultLabel);
   const updateTimeLabel = useCallback(
     (remaining: number) => setTimeLabel(formatAudioTime(remaining)),
     [],
   );
-  const resetTimeLabel = useCallback(() => setTimeLabel('0:00'), []);
+  const resetTimeLabel = useCallback(() => setTimeLabel(defaultLabel), [defaultLabel]);
 
   useAnimatedReaction(
     () => {
@@ -384,6 +387,7 @@ interface TranslationSectionProps {
 }
 
 const TRANSLATION_COLLAPSED_H = 3 * 20; // 3 lines × lineHeight 20
+const translationLayoutCache = new Map<string, { fullHeight: number; truncatable: boolean }>();
 
 const TranslationSection = memo(function TranslationSection({
   isOwn,
@@ -398,16 +402,13 @@ const TranslationSection = memo(function TranslationSection({
 }: TranslationSectionProps) {
   const { colors } = useTheme();
 
-  // Own messages never show the translation card — early return before hooks is
-  // fine because `isOwn` is stable for the lifetime of this component instance.
-  // However, hooks must always be called in the same order, so we keep them
-  // but they stay idle for own messages (the component simply returns null at
-  // the end).
+  const translationCacheKey = `${messageId}:${preferredLanguage}`;
+  const cachedLayout = translationLayoutCache.get(translationCacheKey);
 
   // ── Expand/collapse animation ──────────────────────────────────────────
   const [translationExpanded, setTranslationExpanded] = useState(false);
-  const [translationTruncatable, setTranslationTruncatable] = useState(false);
-  const translationFullHeight = useRef(0);
+  const [translationTruncatable, setTranslationTruncatable] = useState(cachedLayout?.truncatable ?? false);
+  const translationFullHeight = useRef(cachedLayout?.fullHeight ?? 0);
   const translationHeight = useSharedValue(TRANSLATION_COLLAPSED_H);
   const translationChevronAngle = useSharedValue(0);
   const translationTextStyle = useAnimatedStyle(() => ({
@@ -488,6 +489,17 @@ const TranslationSection = memo(function TranslationSection({
             const lines = e.nativeEvent.lines;
             const fullH = lines.reduce((s, l) => s + l.height, 0);
             const truncatable = lines.length > 3;
+
+            const cached = translationLayoutCache.get(translationCacheKey);
+            if (cached && cached.fullHeight === fullH && cached.truncatable === truncatable) {
+              return;
+            }
+
+            translationLayoutCache.set(translationCacheKey, {
+              fullHeight: fullH,
+              truncatable,
+            });
+
             if (translationFullHeight.current !== fullH) {
               translationFullHeight.current = fullH;
             }
@@ -708,8 +720,38 @@ function MessageBubble({
           />
         );
 
-      case 'AUDIO':
-        return <AudioPlayer uri={rawContent} isOwn={isOwn} sentAt={message.createdAt} messageId={message.id} />;
+      case 'AUDIO': {
+        let uri = rawContent;
+        let durationMs = 0;
+        if (rawContent.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(rawContent);
+            if (typeof parsed.url === 'string') uri = parsed.url;
+            if (typeof parsed.durationMs === 'number') durationMs = parsed.durationMs;
+          } catch (e) {}
+        }
+        
+        const isInaudible =
+          confidenceScore !== null &&
+          confidenceScore <= 25 &&
+          !translations &&
+          !message.isTranslating &&
+          !message.isOptimistic;
+
+        return (
+          <View>
+            <AudioPlayer uri={uri} isOwn={isOwn} sentAt={message.createdAt} messageId={message.id} initialDurationMs={durationMs} />
+            {isInaudible && (
+              <View style={[styles.inaudibleBadge, { backgroundColor: isOwn ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)' }]}>
+                <Ionicons name="volume-mute-outline" size={14} color={isOwn ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.4)'} style={{ marginRight: 4 }} />
+                <Text style={[styles.inaudibleText, { color: isOwn ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.4)' }]}>
+                  Inaudible
+                </Text>
+              </View>
+            )}
+          </View>
+        );
+      }
 
       case 'DOCUMENT':
         return (
@@ -1000,6 +1042,20 @@ const styles = StyleSheet.create({
   },
   audioTime: {
     fontSize: 11,
+    fontWeight: '500',
+  },
+  inaudibleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginTop: 8,
+    marginLeft: 38,
+  },
+  inaudibleText: {
+    fontSize: 12,
     fontWeight: '500',
   },
 

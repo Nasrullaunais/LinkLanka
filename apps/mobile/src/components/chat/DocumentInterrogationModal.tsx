@@ -345,7 +345,7 @@ export default function DocumentInterrogationModal({
       <KeyboardAvoidingView
         style={[styles.root, { paddingTop: insets.top, backgroundColor: colors.background }]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : undefined}
       >
         {/* ── Header ── */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>

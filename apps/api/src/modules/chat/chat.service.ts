@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, LessThan, Repository } from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Message, MessageContentType } from './entities/message.entity';
+import { MessageHiddenByUser } from './entities/message-hidden-by-user.entity';
 import {
   Translations,
   ExtractedAction,
@@ -25,7 +26,23 @@ export class ChatService {
   constructor(
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
+    @InjectRepository(MessageHiddenByUser)
+    private readonly hiddenMessageRepository: Repository<MessageHiddenByUser>,
   ) {}
+
+  private applyVisibilityFilter(
+    qb: SelectQueryBuilder<Message>,
+    userId: string,
+  ): SelectQueryBuilder<Message> {
+    return qb
+      .leftJoin(
+        MessageHiddenByUser,
+        'mh',
+        'mh.message_id = m.id AND mh.user_id = :viewerId',
+        { viewerId: userId },
+      )
+      .andWhere('mh.id IS NULL');
+  }
 
   async saveMessage(
     userId: string,
@@ -54,29 +71,37 @@ export class ChatService {
 
   async getPaginatedHistory(
     groupId: string,
+    userId: string,
     page: number = 1,
     limit: number = 50,
   ): Promise<Message[]> {
     const skip = (page - 1) * limit;
-    return this.messageRepository.find({
-      where: { groupId },
-      order: { createdAt: 'DESC' },
-      skip,
-      take: limit,
-      relations: ['sender'],
-    });
+
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.sender', 'sender')
+      .where('m.group_id = :groupId', { groupId })
+      .orderBy('m.created_at', 'DESC')
+      .offset(skip)
+      .limit(limit);
+
+    this.applyVisibilityFilter(qb, userId);
+    return qb.getMany();
   }
 
   /**
    * Returns ALL messages for a group in chronological (ASC) order.
    * Used by the mobile client to eagerly load the full chat history.
    */
-  async getAllMessages(groupId: string): Promise<Message[]> {
-    return this.messageRepository.find({
-      where: { groupId },
-      order: { createdAt: 'ASC' },
-      relations: ['sender'],
-    });
+  async getAllMessages(groupId: string, userId: string): Promise<Message[]> {
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.sender', 'sender')
+      .where('m.group_id = :groupId', { groupId })
+      .orderBy('m.created_at', 'ASC');
+
+    this.applyVisibilityFilter(qb, userId);
+    return qb.getMany();
   }
 
   /**
@@ -86,15 +111,20 @@ export class ChatService {
    */
   async getCursorHistory(
     groupId: string,
+    userId: string,
     before: string,
     limit: number = 30,
   ): Promise<Message[]> {
-    return this.messageRepository.find({
-      where: { groupId, createdAt: LessThan(new Date(before)) },
-      order: { createdAt: 'DESC' },
-      take: limit,
-      relations: ['sender'],
-    });
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.sender', 'sender')
+      .where('m.group_id = :groupId', { groupId })
+      .andWhere('m.created_at < :before', { before: new Date(before) })
+      .orderBy('m.created_at', 'DESC')
+      .limit(limit);
+
+    this.applyVisibilityFilter(qb, userId);
+    return qb.getMany();
   }
 
   async findMessageById(id: string): Promise<Message | null> {
@@ -147,11 +177,14 @@ export class ChatService {
   }
 
   /**
-   * Hard-deletes messages by IDs. Validates that all messages exist and belong
-   * to the requesting user before deleting — if any check fails, no messages
-   * are deleted and an error is thrown.
+   * Hard-deletes sender-owned messages for all participants. Validates each
+   * message belongs to the requesting user and to the active group.
    */
-  async deleteMessages(messageIds: string[], userId: string): Promise<void> {
+  async deleteMessages(
+    messageIds: string[],
+    userId: string,
+    groupId: string,
+  ): Promise<void> {
     if (messageIds.length === 0) return;
 
     const messages = await this.messageRepository.find({
@@ -162,12 +195,55 @@ export class ChatService {
     for (const id of messageIds) {
       const msg = messages.find((m) => m.id === id);
       if (!msg) throw new Error(`Message ${id} not found`);
+      if (msg.groupId !== groupId) {
+        throw new Error('One or more messages do not belong to this group');
+      }
       if (msg.sender.id !== userId) {
         throw new Error('You can only delete your own messages');
       }
     }
 
     await this.messageRepository.remove(messages);
+  }
+
+  /**
+   * Hides received messages only for the requesting user.
+   */
+  async hideMessagesForUser(
+    messageIds: string[],
+    userId: string,
+    groupId: string,
+  ): Promise<void> {
+    if (messageIds.length === 0) return;
+
+    const messages = await this.messageRepository.find({
+      where: { id: In(messageIds) },
+      relations: ['sender'],
+    });
+
+    for (const id of messageIds) {
+      const msg = messages.find((m) => m.id === id);
+      if (!msg) throw new Error(`Message ${id} not found`);
+      if (msg.groupId !== groupId) {
+        throw new Error('One or more messages do not belong to this group');
+      }
+      if (msg.sender.id === userId) {
+        throw new Error('Use permanent delete for your own messages');
+      }
+    }
+
+    await this.hiddenMessageRepository
+      .createQueryBuilder()
+      .insert()
+      .into(MessageHiddenByUser)
+      .values(
+        messageIds.map((messageId) => ({
+          message: { id: messageId },
+          user: { id: userId },
+        })),
+      )
+      .orIgnore()
+      .execute();
   }
 
   /**
@@ -219,6 +295,7 @@ export class ChatService {
    */
   async searchMessages(
     groupId: string,
+    userId: string,
     query: string,
     page: number = 1,
     limit: number = 20,
@@ -250,6 +327,8 @@ export class ChatService {
         )`,
         { tsq: tsQueryExpr, ilike: ilikePattern },
       );
+
+    this.applyVisibilityFilter(qb, userId);
 
     const total = await qb.getCount();
 

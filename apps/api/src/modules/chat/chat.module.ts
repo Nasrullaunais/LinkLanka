@@ -8,6 +8,7 @@ import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
 import { ChatGroup } from './entities/chat-group.entity';
 import { Message } from './entities/message.entity';
+import { MessageHiddenByUser } from './entities/message-hidden-by-user.entity';
 import { GroupMember } from './entities/group-member.entity';
 import { WsJwtGuard } from './guards/ws-jwt.guard';
 import { PersonalContextModule } from '../personal-context/personal-context.module';
@@ -18,7 +19,12 @@ import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Message, ChatGroup, GroupMember]),
+    TypeOrmModule.forFeature([
+      Message,
+      MessageHiddenByUser,
+      ChatGroup,
+      GroupMember,
+    ]),
     PersonalContextModule,
     TranslationModule,
     GroupsModule,

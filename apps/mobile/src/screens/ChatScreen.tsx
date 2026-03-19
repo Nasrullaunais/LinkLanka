@@ -3,9 +3,11 @@ import {
   ActivityIndicator,
   Alert,
   BackHandler,
+  InteractionManager,
   KeyboardAvoidingView,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  Platform,
   Pressable,
   StyleSheet,
   View,
@@ -43,6 +45,39 @@ import { useChatEdit } from '../hooks/useChatEdit';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'Chat'>;
 
+const CHAT_DRAW_DISTANCE = 420;
+const ENABLE_CHAT_PERF_METRICS = __DEV__;
+
+type ScrollPerfSession = {
+  active: boolean;
+  dragActive: boolean;
+  momentumActive: boolean;
+  startedAtMs: number;
+  startOffsetY: number;
+  lastOffsetY: number;
+  lastEventAtMs: number;
+  eventCount: number;
+  totalDistancePx: number;
+  maxSpeedPxPerSec: number;
+  longestEventGapMs: number;
+  jankEventCount: number;
+};
+
+type JsFrameSession = {
+  active: boolean;
+  rafId: number | null;
+  lastFrameAtMs: number;
+  frameCount: number;
+  totalFrameGapMs: number;
+  longestFrameGapMs: number;
+  jankFrameCount: number;
+  approxDroppedFrames: number;
+};
+
+function roundMetric(value: number): number {
+  return Number(value.toFixed(2));
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function ChatScreen({ navigation, route }: Props) {
   const { groupId, groupName, isDm, preferredLanguage: initialLang, otherUserPicture, otherUserId } = route.params;
@@ -51,6 +86,159 @@ export default function ChatScreen({ navigation, route }: Props) {
   const { colors } = useTheme();
   const { setActiveGroupId } = useNotification();
   const insets = useSafeAreaInsets();
+
+  const perfOpenStartRef = useRef(Date.now());
+  const perfHistoryLoggedRef = useRef(false);
+  const perfListDrawLoggedRef = useRef(false);
+  const perfInteractiveLoggedRef = useRef(false);
+  const endDragSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollPerfRef = useRef<ScrollPerfSession>({
+    active: false,
+    dragActive: false,
+    momentumActive: false,
+    startedAtMs: 0,
+    startOffsetY: 0,
+    lastOffsetY: 0,
+    lastEventAtMs: 0,
+    eventCount: 0,
+    totalDistancePx: 0,
+    maxSpeedPxPerSec: 0,
+    longestEventGapMs: 0,
+    jankEventCount: 0,
+  });
+  const jsFramePerfRef = useRef<JsFrameSession>({
+    active: false,
+    rafId: null,
+    lastFrameAtMs: 0,
+    frameCount: 0,
+    totalFrameGapMs: 0,
+    longestFrameGapMs: 0,
+    jankFrameCount: 0,
+    approxDroppedFrames: 0,
+  });
+
+  const logPerf = useCallback(
+    (event: string, data: Record<string, unknown>) => {
+      if (!ENABLE_CHAT_PERF_METRICS) return;
+      console.info(`[ChatPerf][${groupId}] ${event} ${JSON.stringify(data)}`);
+    },
+    [groupId],
+  );
+
+  const stopJsFrameMonitor = useCallback(() => {
+    const js = jsFramePerfRef.current;
+    if (!js.active) {
+      return {
+        fps: 0,
+        longestFrameGapMs: 0,
+        jankFrameCount: 0,
+        approxDroppedFrames: 0,
+      };
+    }
+
+    js.active = false;
+    if (js.rafId != null) {
+      cancelAnimationFrame(js.rafId);
+      js.rafId = null;
+    }
+
+    const averageFrameGap = js.frameCount > 0 ? js.totalFrameGapMs / js.frameCount : 0;
+    const fps = averageFrameGap > 0 ? 1000 / averageFrameGap : 0;
+    return {
+      fps: roundMetric(fps),
+      longestFrameGapMs: roundMetric(js.longestFrameGapMs),
+      jankFrameCount: js.jankFrameCount,
+      approxDroppedFrames: js.approxDroppedFrames,
+    };
+  }, []);
+
+  const startJsFrameMonitor = useCallback(() => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+    const js = jsFramePerfRef.current;
+    if (js.active) return;
+
+    js.active = true;
+    js.lastFrameAtMs = 0;
+    js.frameCount = 0;
+    js.totalFrameGapMs = 0;
+    js.longestFrameGapMs = 0;
+    js.jankFrameCount = 0;
+    js.approxDroppedFrames = 0;
+
+    const tick = (timestamp: number) => {
+      const current = jsFramePerfRef.current;
+      if (!current.active) return;
+
+      if (current.lastFrameAtMs > 0) {
+        const gap = timestamp - current.lastFrameAtMs;
+        current.frameCount += 1;
+        current.totalFrameGapMs += gap;
+        if (gap > current.longestFrameGapMs) current.longestFrameGapMs = gap;
+        if (gap > 20) current.jankFrameCount += 1;
+        if (gap > 16.67) {
+          current.approxDroppedFrames += Math.max(0, Math.floor(gap / 16.67) - 1);
+        }
+      }
+
+      current.lastFrameAtMs = timestamp;
+      current.rafId = requestAnimationFrame(tick);
+    };
+
+    js.rafId = requestAnimationFrame(tick);
+  }, []);
+
+  const finalizeScrollPerfSession = useCallback((reason: 'drag-end' | 'momentum-end' | 'cleanup') => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    const scroll = scrollPerfRef.current;
+    if (!scroll.active) return;
+    if (scroll.dragActive || scroll.momentumActive) return;
+
+    const now = Date.now();
+    const durationMs = Math.max(1, now - scroll.startedAtMs);
+    const eventsPerSec = (scroll.eventCount * 1000) / durationMs;
+    const averageSpeedPxPerSec = (scroll.totalDistancePx * 1000) / durationMs;
+    const averageEventGapMs = scroll.eventCount > 1 ? durationMs / (scroll.eventCount - 1) : durationMs;
+    const jsFrame = stopJsFrameMonitor();
+
+    logPerf('rapid_scroll_sample', {
+      reason,
+      durationMs,
+      events: scroll.eventCount,
+      eventsPerSec: roundMetric(eventsPerSec),
+      averageEventGapMs: roundMetric(averageEventGapMs),
+      longestEventGapMs: roundMetric(scroll.longestEventGapMs),
+      jankEventCount: scroll.jankEventCount,
+      distancePx: roundMetric(scroll.totalDistancePx),
+      averageSpeedPxPerSec: roundMetric(averageSpeedPxPerSec),
+      maxSpeedPxPerSec: roundMetric(scroll.maxSpeedPxPerSec),
+      jsFps: jsFrame.fps,
+      jsLongestFrameGapMs: jsFrame.longestFrameGapMs,
+      jsJankFrames: jsFrame.jankFrameCount,
+      jsApproxDroppedFrames: jsFrame.approxDroppedFrames,
+    });
+
+    scroll.active = false;
+  }, [logPerf, stopJsFrameMonitor]);
+
+  const startScrollPerfSession = useCallback((offsetY: number) => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+    const now = Date.now();
+    const scroll = scrollPerfRef.current;
+
+    scroll.active = true;
+    scroll.startedAtMs = now;
+    scroll.startOffsetY = offsetY;
+    scroll.lastOffsetY = offsetY;
+    scroll.lastEventAtMs = now;
+    scroll.eventCount = 0;
+    scroll.totalDistancePx = 0;
+    scroll.maxSpeedPxPerSec = 0;
+    scroll.longestEventGapMs = 0;
+    scroll.jankEventCount = 0;
+
+    startJsFrameMonitor();
+  }, [startJsFrameMonitor]);
 
   // ── Suppress notifications for this chat while it's on screen ───────────
   useEffect(() => {
@@ -63,6 +251,16 @@ export default function ChatScreen({ navigation, route }: Props) {
     (initialLang as PreferredLanguage) ?? (userDialect as PreferredLanguage) ?? 'english',
   );
   const [isLanguagePickerOpen, setIsLanguagePickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    logPerf('chat_open_start', {
+      at: perfOpenStartRef.current,
+      preferredLanguage,
+      isDm,
+    });
+  }, [logPerf, preferredLanguage, isDm]);
 
   const handleSelectLanguage = useCallback(
     async (lang: PreferredLanguage) => {
@@ -120,6 +318,35 @@ export default function ChatScreen({ navigation, route }: Props) {
       }
     },
   });
+
+  useEffect(() => {
+    if (!ENABLE_CHAT_PERF_METRICS || perfHistoryLoggedRef.current || isLoadingHistory) return;
+
+    perfHistoryLoggedRef.current = true;
+    const elapsed = Date.now() - perfOpenStartRef.current;
+    logPerf('history_ready', {
+      elapsedMs: elapsed,
+      initialMessageCount: messages.length,
+    });
+  }, [isLoadingHistory, messages.length, logPerf]);
+
+  useEffect(() => {
+    if (!ENABLE_CHAT_PERF_METRICS || perfInteractiveLoggedRef.current || isLoadingHistory) return;
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (perfInteractiveLoggedRef.current) return;
+      perfInteractiveLoggedRef.current = true;
+      const elapsed = Date.now() - perfOpenStartRef.current;
+      logPerf('first_interactive', {
+        elapsedMs: elapsed,
+        visibleMessageCount: messagesRef.current.length,
+      });
+    });
+
+    return () => {
+      task.cancel();
+    };
+  }, [isLoadingHistory, logPerf]);
 
   // ── Edit ────────────────────────────────────────────────────────────────
   const {
@@ -193,9 +420,99 @@ export default function ChatScreen({ navigation, route }: Props) {
         isScrolledUpRef.current = is;
         setShowScrollToBottom(is);
       }
+
+      if (!ENABLE_CHAT_PERF_METRICS) return;
+      const scroll = scrollPerfRef.current;
+      if (!scroll.active) return;
+
+      const now = Date.now();
+      const deltaY = Math.abs(contentOffset.y - scroll.lastOffsetY);
+      const deltaT = Math.max(1, now - scroll.lastEventAtMs);
+      const speed = (deltaY * 1000) / deltaT;
+
+      scroll.eventCount += 1;
+      scroll.totalDistancePx += deltaY;
+      scroll.lastOffsetY = contentOffset.y;
+      scroll.lastEventAtMs = now;
+
+      if (deltaT > scroll.longestEventGapMs) scroll.longestEventGapMs = deltaT;
+      if (deltaT > 50) scroll.jankEventCount += 1;
+      if (speed > scroll.maxSpeedPxPerSec) scroll.maxSpeedPxPerSec = speed;
     },
     [],
   );
+
+  const handleListLoad = useCallback((info: { elapsedTimeInMs: number }) => {
+    if (!ENABLE_CHAT_PERF_METRICS || perfListDrawLoggedRef.current) return;
+    perfListDrawLoggedRef.current = true;
+
+    logPerf('list_first_draw', {
+      elapsedSinceOpenMs: Date.now() - perfOpenStartRef.current,
+      flashListElapsedMs: roundMetric(info.elapsedTimeInMs),
+      renderedMessages: messagesRef.current.length,
+    });
+  }, [logPerf]);
+
+  const handleScrollBeginDrag = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    const scroll = scrollPerfRef.current;
+    scroll.dragActive = true;
+    if (endDragSettleTimerRef.current) {
+      clearTimeout(endDragSettleTimerRef.current);
+      endDragSettleTimerRef.current = null;
+    }
+    if (!scroll.active) {
+      startScrollPerfSession(e.nativeEvent.contentOffset.y);
+    }
+  }, [startScrollPerfSession]);
+
+  const handleScrollEndDrag = useCallback(() => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    const scroll = scrollPerfRef.current;
+    scroll.dragActive = false;
+
+    if (endDragSettleTimerRef.current) clearTimeout(endDragSettleTimerRef.current);
+    endDragSettleTimerRef.current = setTimeout(() => {
+      const latest = scrollPerfRef.current;
+      if (!latest.momentumActive) {
+        finalizeScrollPerfSession('drag-end');
+      }
+    }, 120);
+  }, [finalizeScrollPerfSession]);
+
+  const handleMomentumScrollBegin = useCallback(() => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    const scroll = scrollPerfRef.current;
+    scroll.momentumActive = true;
+    if (!scroll.active) {
+      startScrollPerfSession(scroll.lastOffsetY);
+    }
+    if (endDragSettleTimerRef.current) {
+      clearTimeout(endDragSettleTimerRef.current);
+      endDragSettleTimerRef.current = null;
+    }
+  }, [startScrollPerfSession]);
+
+  const handleMomentumScrollEnd = useCallback(() => {
+    if (!ENABLE_CHAT_PERF_METRICS) return;
+
+    const scroll = scrollPerfRef.current;
+    scroll.momentumActive = false;
+    finalizeScrollPerfSession('momentum-end');
+  }, [finalizeScrollPerfSession]);
+
+  useEffect(() => {
+    return () => {
+      if (endDragSettleTimerRef.current) {
+        clearTimeout(endDragSettleTimerRef.current);
+      }
+      stopJsFrameMonitor();
+      finalizeScrollPerfSession('cleanup');
+    };
+  }, [finalizeScrollPerfSession, stopJsFrameMonitor]);
 
   const scrollToBottom = useCallback(() => {
     flatListRef.current?.scrollToEnd({ animated: true });
@@ -236,27 +553,67 @@ export default function ChatScreen({ navigation, route }: Props) {
   const handleDelete = useCallback(() => {
     const ref = selectedIdsRef.current;
     if (!socket || ref.size === 0) return;
+    if (!userId) return;
 
-    const count = ref.size;
-    const ids = [...ref];
+    const ownMessageIds: string[] = [];
+    const receivedMessageIds: string[] = [];
+
+    for (const id of ref) {
+      const msg = messagesRef.current.find((m) => m.id === id);
+      if (!msg || msg.isOptimistic) continue;
+      if (msg.senderId === userId) {
+        ownMessageIds.push(id);
+      } else {
+        receivedMessageIds.push(id);
+      }
+    }
+
+    const count = ownMessageIds.length + receivedMessageIds.length;
+    if (count === 0) return;
+
+    let body =
+      count === 1
+        ? 'Delete this message? This cannot be undone.'
+        : `Delete these ${count} messages? This cannot be undone.`;
+
+    if (ownMessageIds.length > 0 && receivedMessageIds.length > 0) {
+      body =
+        `Delete ${ownMessageIds.length} sent message(s) for everyone and remove ` +
+        `${receivedMessageIds.length} received message(s) from your chat? This cannot be undone.`;
+    } else if (receivedMessageIds.length > 0) {
+      body =
+        count === 1
+          ? 'Remove this received message from your chat? This cannot be undone.'
+          : `Remove these ${count} received messages from your chat? This cannot be undone.`;
+    }
+
     Alert.alert(
       'Delete Message' + (count > 1 ? 's' : ''),
-      `Delete ${count === 1 ? 'this message' : `these ${count} messages`}? This cannot be undone.`,
+      body,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            const idsSet = new Set(ids);
-            setMessages((prev) => prev.filter((m) => !idsSet.has(m.id)));
             exitSelectionMode();
-            socket.emit('deleteMessages', { groupId, messageIds: ids });
+            if (ownMessageIds.length > 0) {
+              socket.emit('deleteMessages', {
+                groupId,
+                messageIds: ownMessageIds,
+              });
+            }
+            if (receivedMessageIds.length > 0) {
+              socket.emit('hideMessages', {
+                groupId,
+                messageIds: receivedMessageIds,
+              });
+            }
           },
         },
       ],
     );
-  }, [socket, groupId, exitSelectionMode, setMessages, selectedIdsRef]);
+  }, [socket, groupId, exitSelectionMode, selectedIdsRef, messagesRef, userId]);
 
   // ── Render helpers ──────────────────────────────────────────────────────
   const renderItem = useCallback(
@@ -279,8 +636,8 @@ export default function ChatScreen({ navigation, route }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior="padding"
-      keyboardVerticalOffset={0}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : undefined}
     >
       {/* Header */}
       <ChatHeader
@@ -343,10 +700,12 @@ export default function ChatScreen({ navigation, route }: Props) {
               ref={flatListRef}
               data={messages}
               renderItem={renderItem}
+              onLoad={handleListLoad}
               keyExtractor={keyExtractor}
               contentContainerStyle={styles.list}
               showsVerticalScrollIndicator={false}
-              drawDistance={800}
+              drawDistance={CHAT_DRAW_DISTANCE}
+              overrideProps={{ initialDrawBatchSize: 14 }}
               maintainVisibleContentPosition={{
                 startRenderingFromBottom: true,
               }}
@@ -360,7 +719,11 @@ export default function ChatScreen({ navigation, route }: Props) {
                 ) : null
               }
               onScroll={handleScroll}
-              scrollEventThrottle={80}
+              onScrollBeginDrag={handleScrollBeginDrag}
+              onScrollEndDrag={handleScrollEndDrag}
+              onMomentumScrollBegin={handleMomentumScrollBegin}
+              onMomentumScrollEnd={handleMomentumScrollEnd}
+              scrollEventThrottle={32}
               getItemType={(item) => item.contentType}
             />
             {showScrollToBottom && (

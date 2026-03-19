@@ -297,11 +297,13 @@ export async function processAudio(
   groupId: string,
   audioBase64: string,
   audioMimeType: string,
+  durationMs?: number,
 ): Promise<AudioProcessResult> {
   const { data } = await apiClient.post<AudioProcessResult>('/audio/process', {
     groupId,
     audioBase64,
     audioMimeType,
+    durationMs,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
   return data;
@@ -310,9 +312,22 @@ export async function processAudio(
 // ── Dialect / Magic Refine ───────────────────────────────────────────────────────────────
 
 export type RefineMode = 'professional' | 'singlish' | 'tanglish';
+export type DialectTargetLanguage = 'english' | 'singlish' | 'tanglish';
+export type DialectTargetTone = 'professional' | 'casual';
+export type DialectDetectedLanguage = 'english' | 'singlish' | 'tanglish' | 'mixed';
+export type DialectDetectedTone = 'professional' | 'casual' | 'neutral';
 
 export interface RefineResult {
   refinedText: string;
+}
+
+export interface DialectSuggestionResult {
+  detectedLanguage: DialectDetectedLanguage;
+  detectedTone: DialectDetectedTone;
+  confidence: number;
+  suggestedTargetLanguages: DialectTargetLanguage[];
+  suggestedTones: DialectTargetTone[];
+  reason?: string;
 }
 
 /**
@@ -332,6 +347,39 @@ export async function refineText(
   const { data } = await apiClient.post<RefineResult>(
     '/dialect/refine',
     { text, mode },
+    { signal, timeout: 30_000 },
+  );
+  return data;
+}
+
+/**
+ * Detect source language and tone, then return ranked target suggestions for
+ * AI Magic refinement.
+ */
+export async function suggestDialectOptions(
+  text: string,
+  signal?: AbortSignal,
+): Promise<DialectSuggestionResult> {
+  const { data } = await apiClient.post<DialectSuggestionResult>(
+    '/dialect/suggest',
+    { text },
+    { signal, timeout: 15_000 },
+  );
+  return data;
+}
+
+/**
+ * Refine text with explicit target language and tone.
+ */
+export async function refineTextV2(
+  text: string,
+  targetLanguage: DialectTargetLanguage,
+  targetTone: DialectTargetTone,
+  signal?: AbortSignal,
+): Promise<RefineResult> {
+  const { data } = await apiClient.post<RefineResult>(
+    '/dialect/refine-v2',
+    { text, targetLanguage, targetTone },
     { signal, timeout: 30_000 },
   );
   return data;
