@@ -37,6 +37,7 @@ apps/api/audios/
 .env.secrets
 .env.home
 apps/mobile/.env.home
+apps/api/.env.example
 
 ## Editor/OS
 .DS_Store

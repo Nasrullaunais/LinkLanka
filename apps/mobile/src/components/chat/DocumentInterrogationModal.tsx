@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Dimensions,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -145,6 +146,7 @@ export default function DocumentInterrogationModal({
   const [qaMessages, setQaMessages] = useState<QAMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isAsking, setIsAsking] = useState(false);
+  const [androidKeyboardOffset, setAndroidKeyboardOffset] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [pdfError, setPdfError] = useState(false);
@@ -156,7 +158,27 @@ export default function DocumentInterrogationModal({
       setPdfError(false);
       setCurrentPage(1);
       setTotalPages(0);
+      setAndroidKeyboardOffset(0);
     }
+  }, [visible]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !visible) return;
+
+    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
+      const keyboardHeight = event.endCoordinates?.height ?? 0;
+      setAndroidKeyboardOffset(Math.max(0, keyboardHeight));
+    });
+
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setAndroidKeyboardOffset(0);
+    });
+
+    return () => {
+      setAndroidKeyboardOffset(0);
+      showSub.remove();
+      hideSub.remove();
+    };
   }, [visible]);
 
   // ── Persist / Restore Q&A history ──────────────────────────────────────
@@ -344,7 +366,7 @@ export default function DocumentInterrogationModal({
     >
       <KeyboardAvoidingView
         style={[styles.root, { paddingTop: insets.top, backgroundColor: colors.background }]}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : undefined}
       >
         {/* ── Header ── */}
@@ -429,7 +451,12 @@ export default function DocumentInterrogationModal({
           )}
 
           {/* ── Input bar ── */}
-          <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 8), backgroundColor: colors.inputWrapperBg, borderTopColor: colors.inputBorder }]}>
+          <View style={[styles.inputBar, {
+            paddingBottom: Math.max(insets.bottom, 8),
+            marginBottom: Platform.OS === 'android' ? androidKeyboardOffset : 0,
+            backgroundColor: colors.inputWrapperBg,
+            borderTopColor: colors.inputBorder,
+          }]}>
             <TextInput
               style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText }]}
               placeholder="Ask AI about this document…"

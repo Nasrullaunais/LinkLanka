@@ -550,7 +550,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
     const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
       const keyboardHeight = event.endCoordinates?.height ?? 0;
-      setAndroidKeyboardOffset(Math.max(0, keyboardHeight - insets.bottom));
+      setAndroidKeyboardOffset(Math.max(0, keyboardHeight));
     });
 
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
@@ -558,10 +558,11 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     });
 
     return () => {
+      setAndroidKeyboardOffset(0);
       showSub.remove();
       hideSub.remove();
     };
-  }, [insets.bottom]);
+  }, []);
 
   const showFriendlyBlockFeedback = useCallback((status: AudibilityStatus) => {
     setBlockedFeedback(getBlockedFeedback(status));
