@@ -82,3 +82,4 @@ out/
 /.turbo/
 coverage/
 next-env.d.ts
+apps/api/.env.example
