@@ -9,6 +9,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from '../src/contexts/AuthContext';
 import { SocketProvider } from '../src/contexts/SocketContext';
 import { NotificationProvider } from '../src/contexts/NotificationContext';
+import { ChatMessageCacheProvider } from '../src/contexts/ChatMessageCacheContext';
 import { ThemeProvider, useTheme } from '../src/contexts/ThemeContext';
 
 import LoginScreen from '../src/screens/LoginScreen';
@@ -43,39 +44,41 @@ function AppNavigator() {
   return (
     <SocketProvider userToken={userToken}>
       <NotificationProvider userToken={userToken}>
-        <AppStack.Navigator screenOptions={{ headerShown: false, freezeOnBlur: true }}>
-          <AppStack.Screen name="HomeTabs" component={ChatsListScreen} />
-          <AppStack.Screen
-            name="Chat"
-            component={ChatScreen}
-            options={{ animation: 'slide_from_right' }}
-          />
-          <AppStack.Screen
-            name="CreateGroup"
-            component={CreateGroupScreen}
-            options={{ animation: 'slide_from_bottom' }}
-          />
-          <AppStack.Screen
-            name="Profile"
-            component={ProfileScreen}
-            options={{ animation: 'slide_from_right' }}
-          />
-          <AppStack.Screen
-            name="PersonalDictionary"
-            component={PersonalDictionaryScreen}
-            options={{ animation: 'slide_from_right' }}
-          />
-          <AppStack.Screen
-            name="GroupInfo"
-            component={GroupInfoScreen}
-            options={{ animation: 'slide_from_right' }}
-          />
-          <AppStack.Screen
-            name="PersonInfo"
-            component={PersonInfoScreen}
-            options={{ animation: 'slide_from_right' }}
-          />
-        </AppStack.Navigator>
+        <ChatMessageCacheProvider>
+          <AppStack.Navigator screenOptions={{ headerShown: false, freezeOnBlur: true }}>
+            <AppStack.Screen name="HomeTabs" component={ChatsListScreen} />
+            <AppStack.Screen
+              name="Chat"
+              component={ChatScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <AppStack.Screen
+              name="CreateGroup"
+              component={CreateGroupScreen}
+              options={{ animation: 'slide_from_bottom' }}
+            />
+            <AppStack.Screen
+              name="Profile"
+              component={ProfileScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <AppStack.Screen
+              name="PersonalDictionary"
+              component={PersonalDictionaryScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <AppStack.Screen
+              name="GroupInfo"
+              component={GroupInfoScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <AppStack.Screen
+              name="PersonInfo"
+              component={PersonInfoScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+          </AppStack.Navigator>
+        </ChatMessageCacheProvider>
       </NotificationProvider>
     </SocketProvider>
   );

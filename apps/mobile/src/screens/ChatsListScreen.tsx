@@ -263,6 +263,8 @@ export default function ChatsListScreen() {
   }, [searchQuery]);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
+  // Keep list performance high: do not prefetch chat history from this screen.
+  // Message loading should happen only inside ChatScreen/useChatMessages.
   const openGroupChat = useCallback(
     (item: GroupItem) => {
       navigation.navigate('Chat', {

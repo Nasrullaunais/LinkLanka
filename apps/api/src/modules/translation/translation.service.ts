@@ -10,6 +10,43 @@ import {
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { z } from 'zod';
 
+const EVENT_TIMEZONE = 'Asia/Colombo';
+
+function getIsoLikeInTimezone(
+  date: Date,
+  timeZone: string,
+): {
+  date: string;
+  dateTimeWithOffset: string;
+} {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = formatter.formatToParts(date);
+  const part = (type: string): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+
+  const year = part('year');
+  const month = part('month');
+  const day = part('day');
+  const hour = part('hour');
+  const minute = part('minute');
+  const second = part('second');
+
+  return {
+    date: `${year}-${month}-${day}`,
+    // Sri Lanka has a fixed +05:30 offset (no DST).
+    dateTimeWithOffset: `${year}-${month}-${day}T${hour}:${minute}:${second}+05:30`,
+  };
+}
+
 export const ExtractedActionSchema = z.object({
   type: z.enum(['MEETING', 'REMINDER']),
   title: z
@@ -87,6 +124,7 @@ export class TranslationService {
     payload: TranslateIntentPayload,
   ): Promise<TranslationResult> {
     const { chatHistory } = payload;
+    const sriLankaNow = getIsoLikeInTimezone(new Date(), EVENT_TIMEZONE);
 
     const structuredModel = this.model.withStructuredOutput(TranslationSchema);
 
@@ -119,10 +157,16 @@ Rules:
 - "type" is MEETING for group events, study sessions, calls, hangouts. REMINDER for personal tasks, deadlines, todos.
 - "title" should be concise and descriptive in English (e.g. "Database kuppiya session").
 - "timestamp" must be a valid ISO 8601 datetime. Use today's date (${new Date().toISOString().split('T')[0]}) and current time (${new Date().toISOString()}) as reference for relative phrases like "tomorrow", "tonight", "next Monday", "day after tomorrow".
+IMPORTANT TIMEZONE RULE: This app uses Sri Lanka time only (${EVENT_TIMEZONE}) for event intent.
+- "timestamp" must be a valid ISO 8601 datetime in UTC with Z suffix.
+- Resolve relative phrases like "tomorrow", "tonight", "next Monday", "day after tomorrow" using Sri Lanka local context only.
+- Sri Lanka reference date: ${sriLankaNow.date}
+- Sri Lanka reference time: ${sriLankaNow.dateTimeWithOffset}
+- After resolving the local Sri Lanka date/time, convert that local moment to UTC ISO datetime with Z.
   CRITICAL: You MUST use the EXACT time and date mentioned in the message. Do NOT approximate, round, or infer a different time. If the message says "4:00 PM", the timestamp MUST have 16:00. If the message says "day after tomorrow", add exactly 2 days to today's date. If the message says "tomorrow", add exactly 1 day. NEVER hallucinate or guess a time that is not explicitly stated.
 - "description" is optional — include location, Zoom link, or other context if mentioned.
 - If there are NO actionable items, omit "extractedActions" entirely or return an empty array.
-Examples of messages WITH actions (assuming today is ${new Date().toISOString().split('T')[0]}):
+Examples of messages WITH actions (assuming Sri Lanka date is ${sriLankaNow.date}):
 - "Machan, let's have a kuppiya tomorrow at 8 PM on Zoom" → MEETING, timestamp must be tomorrow at exactly 20:00
 - "Remind me to send the database schema tonight" → REMINDER
 - "DB assignment deadline is next Friday 11:59 PM" → REMINDER

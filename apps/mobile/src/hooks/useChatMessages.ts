@@ -4,6 +4,7 @@ import type { Socket } from 'socket.io-client';
 
 import apiClient, { retranslateMessage, processAudio, uploadMedia } from '../services/api';
 import type { ChatMessage } from '../components/chat/MessageBubble';
+import { useChatMessageCache } from '../contexts/ChatMessageCacheContext';
 
 // ── Payload type coming from ChatInput ───────────────────────────────────────
 export interface ChatPayload {
@@ -188,6 +189,35 @@ function serverEventToChatMessage(evt: NewMessageEvent): ChatMessage {
   };
 }
 
+function mergeMessagesById(
+  existing: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] {
+  if (incoming.length === 0) return existing;
+
+  const merged = [...existing];
+  const indexById = buildMessageIndex(merged);
+
+  for (const message of incoming) {
+    const existingIndex = indexById.get(message.id);
+    if (existingIndex == null) {
+      merged.push(message);
+      indexById.set(message.id, merged.length - 1);
+      continue;
+    }
+    merged[existingIndex] = message;
+  }
+
+  merged.sort((a, b) => {
+    const aTime = new Date(a.createdAt ?? 0).getTime();
+    const bTime = new Date(b.createdAt ?? 0).getTime();
+    if (aTime !== bTime) return aTime - bTime;
+    return a.id.localeCompare(b.id);
+  });
+
+  return merged;
+}
+
 // ── Hook params ──────────────────────────────────────────────────────────────
 interface UseChatMessagesParams {
   groupId: string;
@@ -225,26 +255,46 @@ export function useChatMessages({
   editOriginalRef,
   onNewMessage,
 }: UseChatMessagesParams): UseChatMessagesReturn {
+  const { getChatCache, upsertChatCache } = useChatMessageCache();
+  const initialCacheRef = useRef(getChatCache(groupId));
+
   /**
    * Messages are stored in ASCENDING order — index 0 = oldest message.
    * FlashList renders them top-to-bottom with `startRenderingFromBottom` so
    * the newest messages appear at the visual bottom (standard chat layout).
    * Older messages are prepended to the front when the user scrolls up.
    */
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => initialCacheRef.current?.messages ?? [],
+  );
+  const [isLoadingHistory, setIsLoadingHistory] = useState(
+    () => !initialCacheRef.current,
+  );
   const [isFetchingOlder, setIsFetchingOlder] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(
+    () => initialCacheRef.current?.hasMore ?? true,
+  );
   const queuedPatchesRef = useRef<MessagePatch[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Track optimistic IDs for reconciliation
   const optimisticIdsRef   = useRef<Set<string>>(new Set());
   const isFetchingRef      = useRef(false);  // prevent concurrent loadOlderMessages calls
-  const hasMoreRef         = useRef(true);
-  const oldestCursorRef    = useRef<string | null>(null); // createdAt of oldest loaded msg
+  const hasMoreRef         = useRef(initialCacheRef.current?.hasMore ?? true);
+  const oldestCursorRef    = useRef<string | null>(initialCacheRef.current?.oldestCursor ?? null); // createdAt of oldest loaded msg
   const onNewMessageRef    = useRef<(() => void) | undefined>(onNewMessage);
   useEffect(() => { onNewMessageRef.current = onNewMessage; }, [onNewMessage]);
+
+  useEffect(() => {
+    const cached = getChatCache(groupId);
+    if (!cached) return;
+
+    setMessages(cached.messages);
+    setHasMore(cached.hasMore);
+    hasMoreRef.current = cached.hasMore;
+    oldestCursorRef.current = cached.oldestCursor;
+    setIsLoadingHistory(false);
+  }, [groupId, getChatCache]);
 
   const flushQueuedPatches = useCallback(() => {
     flushTimerRef.current = null;
@@ -274,6 +324,14 @@ export function useChatMessages({
   }, [flushQueuedPatches]);
 
   useEffect(() => {
+    upsertChatCache(groupId, {
+      messages,
+      hasMore,
+      oldestCursor: oldestCursorRef.current,
+    });
+  }, [groupId, messages, hasMore, upsertChatCache]);
+
+  useEffect(() => {
     return () => {
       if (flushTimerRef.current != null) {
         clearTimeout(flushTimerRef.current);
@@ -285,11 +343,15 @@ export function useChatMessages({
   // ── 1. Fetch most-recent PAGE_SIZE messages on mount ─────────────────────
   useEffect(() => {
     let cancelled = false;
+    const cached = getChatCache(groupId);
 
-    setIsLoadingHistory(true);
-    setHasMore(true);
-    hasMoreRef.current = true;
-    oldestCursorRef.current = null;
+    if (!cached) {
+      setMessages([]);
+      setIsLoadingHistory(true);
+      setHasMore(true);
+      hasMoreRef.current = true;
+      oldestCursorRef.current = null;
+    }
 
     (async () => {
       try {
@@ -301,7 +363,7 @@ export function useChatMessages({
         if (!cancelled) {
           // Server returns DESC (newest first); reverse to ASC for list display
           const mapped = data.map(historyToChatMessage).reverse();
-          setMessages(mapped);
+          setMessages((prev) => (cached ? mergeMessagesById(prev, mapped) : mapped));
 
           if (mapped.length > 0) {
             // Oldest message is now at index 0 — use it as the cursor for loading more
@@ -322,7 +384,7 @@ export function useChatMessages({
     return () => {
       cancelled = true;
     };
-  }, [groupId]);
+  }, [groupId, getChatCache]);
 
   // ── 2. Load older messages (cursor-based infinite scroll) ─────────────────
   const loadOlderMessages = useCallback(async () => {

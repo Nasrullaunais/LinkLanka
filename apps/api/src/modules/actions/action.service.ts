@@ -1,6 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ExtractedAction } from '../translation/translation.service';
 
+const SRI_LANKA_OFFSET_SUFFIX = '+05:30';
+
+function normalizeTimestampToUtc(timestamp: string): string | null {
+  const input = timestamp.trim().replace(' ', 'T');
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(input);
+  const isoLocalPattern =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/;
+
+  const candidate =
+    hasExplicitZone || !isoLocalPattern.test(input)
+      ? input
+      : `${input}${SRI_LANKA_OFFSET_SUFFIX}`;
+
+  const parsed = new Date(candidate);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
 /**
  * ActionService — processes AI-extracted actions from chat messages.
  *
@@ -50,9 +68,10 @@ export class ActionService {
         continue;
       }
 
-      // Validate the timestamp is parseable
-      const date = new Date(action.timestamp);
-      if (isNaN(date.getTime())) {
+      // Normalize timestamps to canonical UTC ISO. If the model omits an offset,
+      // treat the time as Sri Lanka local time to prevent server-locale drift.
+      const normalizedTimestamp = normalizeTimestampToUtc(action.timestamp);
+      if (!normalizedTimestamp) {
         this.logger.warn(
           `[processActions] Invalid timestamp "${action.timestamp}" for messageId=${messageId} — skipping`,
         );
@@ -62,12 +81,12 @@ export class ActionService {
       validActions.push({
         type: action.type,
         title: action.title,
-        timestamp: date.toISOString(),
+        timestamp: normalizedTimestamp,
         ...(action.description ? { description: action.description } : {}),
       });
 
       this.logger.log(
-        `[processActions] Extracted ${action.type}: "${action.title}" at ${date.toISOString()} ` +
+        `[processActions] Extracted ${action.type}: "${action.title}" at ${normalizedTimestamp} ` +
           `(messageId=${messageId}, senderId=${senderId}, groupId=${groupId})`,
       );
     }

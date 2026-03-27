@@ -66,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Profile hydration ─────────────────────────────────────────────────────
-  const hydrateProfile = useCallback(async () => {
+  const hydrateProfile = useCallback(async (): Promise<boolean> => {
     try {
       const profile = await fetchCurrentUser();
       setUserDisplayName(profile.displayName);
@@ -77,10 +77,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSecureItem('user_dialect', profile.nativeDialect),
         setSecureItem('user_profile_picture', profile.profilePictureUrl ?? ''),
       ]);
-    } catch {
+      return true;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 401) {
+        await removeAuthToken();
+        await clearSessionState();
+        return false;
+      }
       // API unavailable — keep whatever is already in state (from SecureStore cache)
+      return true;
     }
-  }, []);
+  }, [clearSessionState]);
 
   // Cold-start hydration
   useEffect(() => {
@@ -89,8 +97,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const storedToken = await getSecureItem('jwt_token');
         if (storedToken) {
           await setAuthToken(storedToken);
-          setUserToken(storedToken);
-          setUserId(decodeJwtPayload(storedToken)?.sub ?? null);
 
           // Restore cached profile instantly for snappy first render
           const [cachedName, cachedDialect, cachedPic] = await Promise.all([
@@ -102,8 +108,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (cachedDialect) setUserDialect(cachedDialect);
           if (cachedPic) setUserProfilePicture(cachedPic);
 
-          // Background refresh — don't block the loading state
-          hydrateProfile();
+          // Validate token and refresh profile before entering the app stack.
+          const isValid = await hydrateProfile();
+          if (isValid) {
+            setUserToken(storedToken);
+            setUserId(decodeJwtPayload(storedToken)?.sub ?? null);
+          }
         }
       } catch (error) {
         console.error('[AuthContext] Cold-start hydration failed:', error);
@@ -162,7 +172,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isLoading,
       login,
       logout,
-      refreshProfile: hydrateProfile,
+      refreshProfile: async () => {
+        await hydrateProfile();
+      },
     }),
     [userToken, userId, userDisplayName, userDialect, userProfilePicture, isLoading, login, logout, hydrateProfile],
   );

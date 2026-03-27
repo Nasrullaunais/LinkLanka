@@ -1,5 +1,6 @@
 import * as ExpoCalendar from 'expo-calendar';
 import { Alert, Linking, Platform } from 'react-native';
+import { APP_EVENT_TIMEZONE } from '../constants/timezone';
 
 export interface CalendarEvent {
   title: string;
@@ -140,7 +141,7 @@ export async function addEventToCalendar(
       startDate: event.startDate,
       endDate: event.endDate,
       notes: event.notes,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timeZone: APP_EVENT_TIMEZONE,
     });
 
     return true;

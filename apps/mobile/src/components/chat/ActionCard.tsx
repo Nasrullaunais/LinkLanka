@@ -8,6 +8,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
+import { APP_EVENT_TIMEZONE } from '../../constants/timezone';
 import ActionEventEditor, {
   type EventEditorData,
 } from './ActionEventEditor';
@@ -32,16 +33,31 @@ function formatActionTime(isoString: string): string {
   const date = new Date(isoString);
   const now = new Date();
 
+  const ymdFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: APP_EVENT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const toYmd = (value: Date): string => {
+    const parts = ymdFormatter.formatToParts(value);
+    const year = parts.find((p) => p.type === 'year')?.value ?? '';
+    const month = parts.find((p) => p.type === 'month')?.value ?? '';
+    const day = parts.find((p) => p.type === 'day')?.value ?? '';
+    return `${year}-${month}-${day}`;
+  };
+
   // Check if it's today or tomorrow
-  const isToday = date.toDateString() === now.toDateString();
+  const isToday = toYmd(date) === toYmd(now);
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const isTomorrow = date.toDateString() === tomorrow.toDateString();
+  const isTomorrow = toYmd(date) === toYmd(tomorrow);
 
   const timeStr = date.toLocaleTimeString([], {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    timeZone: APP_EVENT_TIMEZONE,
   });
 
   if (isToday) return `Today, ${timeStr}`;
@@ -52,6 +68,7 @@ function formatActionTime(isoString: string): string {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
+    timeZone: APP_EVENT_TIMEZONE,
   });
   return `${dateStr}, ${timeStr}`;
 }
