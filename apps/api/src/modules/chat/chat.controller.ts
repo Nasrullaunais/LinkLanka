@@ -20,8 +20,10 @@ import { Message, MessageContentType } from './entities/message.entity';
 import { GroupsService } from '../groups/groups.service';
 import { PersonalContextService } from '../personal-context/personal-context.service';
 import {
+  DetectedLanguage,
   TranslationService,
   Translations,
+  TranslatedAudioUrls,
 } from '../translation/translation.service';
 
 interface AuthRequest {
@@ -87,7 +89,13 @@ export class ChatController {
   async retranslateMessage(
     @Param('messageId') messageId: string,
     @Request() req: AuthRequest,
-  ): Promise<{ translations: Translations; confidenceScore: number }> {
+  ): Promise<{
+    translations: Translations;
+    confidenceScore: number;
+    detectedLanguage: DetectedLanguage | null;
+    originalTone: string | null;
+    translatedAudioUrls: TranslatedAudioUrls | null;
+  }> {
     const userId = req.user.sub;
 
     const message = await this.chatService.findMessageById(messageId);
@@ -101,7 +109,14 @@ export class ChatController {
     const userDictionary =
       await this.personalContextService.getUserDictionary(userId);
 
-    let result: { translations: Translations; confidenceScore: number };
+    let result: {
+      translations: Translations;
+      confidenceScore: number;
+      detectedLanguage: DetectedLanguage;
+      originalTone: string;
+    };
+
+    let translatedAudioUrls: TranslatedAudioUrls | null = null;
 
     try {
       if (message.contentType === MessageContentType.TEXT) {
@@ -135,6 +150,13 @@ export class ChatController {
           chatHistory: [],
           userDictionary,
         });
+
+        translatedAudioUrls =
+          await this.translationService.generateTranslatedAudioFiles({
+            translations: result.translations,
+            detectedLanguage: result.detectedLanguage,
+            originalTone: result.originalTone,
+          });
       } else {
         // IMAGE / DOCUMENT: rawContent is the URL, derive local path
         const fileName = message.rawContent.split('/').pop()!;
@@ -163,15 +185,20 @@ export class ChatController {
       throw error;
     }
 
-    await this.chatService.updateMessageTranslations(
-      messageId,
-      result.translations,
-      result.confidenceScore,
-    );
+    await this.chatService.updateMessageWithTranslation(messageId, {
+      detectedLanguage: result.detectedLanguage,
+      originalTone: result.originalTone,
+      translatedAudioUrls,
+      translations: result.translations,
+      confidenceScore: result.confidenceScore,
+    });
 
     return {
       translations: result.translations,
       confidenceScore: result.confidenceScore,
+      detectedLanguage: result.detectedLanguage,
+      originalTone: result.originalTone,
+      translatedAudioUrls,
     };
   }
 

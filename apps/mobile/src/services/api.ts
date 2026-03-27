@@ -1,4 +1,6 @@
 import axios from 'axios';
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 import {
   getSecureItem,
@@ -9,7 +11,27 @@ import {
 // ── Config ───────────────────────────────────────────────────────────────────
 // API URL is injected via EXPO_PUBLIC_API_URL in apps/mobile/.env
 // Run `./use-home.sh` or `./use-uni.sh` from the workspace root to switch environments.
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000';
+function resolveApiBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (envUrl) return envUrl;
+
+  // In Expo dev sessions, hostUri usually points to the machine running Metro.
+  const hostUri = Constants.expoConfig?.hostUri;
+  const metroHost = hostUri?.split(':')[0];
+  if (metroHost) return `http://${metroHost}:3000`;
+
+  // Android emulator cannot reach host localhost directly.
+  if (Platform.OS === 'android') return 'http://10.0.2.2:3000';
+  return 'http://localhost:3000';
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
+
+if (__DEV__ && !process.env.EXPO_PUBLIC_API_URL) {
+  console.warn(
+    `[api] EXPO_PUBLIC_API_URL is not set. Falling back to ${API_BASE_URL}.`,
+  );
+}
 
 const TOKEN_KEY = 'jwt_token';
 
@@ -270,6 +292,13 @@ export interface TranslationResult {
     tanglish: string;
   };
   confidenceScore: number;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: {
+    english?: string;
+    singlish?: string;
+    tanglish?: string;
+  } | null;
 }
 
 export async function retranslateMessage(messageId: string): Promise<TranslationResult> {

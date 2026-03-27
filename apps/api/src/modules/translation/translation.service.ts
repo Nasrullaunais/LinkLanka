@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
+import { join } from 'path';
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   AIMessage,
@@ -8,6 +10,7 @@ import {
   SystemMessage,
 } from '@langchain/core/messages';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import axios from 'axios';
 import { z } from 'zod';
 
 const EVENT_TIMEZONE = 'Asia/Colombo';
@@ -73,6 +76,14 @@ export const TranslationSchema = z.object({
     tanglish: z.string(),
     english: z.string(),
   }),
+  detectedLanguage: z.enum([
+    'english',
+    'singlish',
+    'tanglish',
+    'mixed',
+    'unknown',
+  ]).default('unknown'),
+  originalTone: z.string().default('neutral'),
   confidenceScore: z.number().min(0).max(100),
   extractedActions: z
     .array(ExtractedActionSchema)
@@ -88,6 +99,15 @@ export interface Translations {
   singlish: string;
   tanglish: string;
   english: string;
+}
+
+export type SupportedLanguage = keyof Translations;
+export type DetectedLanguage = SupportedLanguage | 'mixed' | 'unknown';
+
+export interface TranslatedAudioUrls {
+  singlish?: string;
+  tanglish?: string;
+  english?: string;
 }
 
 interface ChatTurn {
@@ -111,11 +131,17 @@ interface TranslateIntentPayload {
 
 @Injectable()
 export class TranslationService {
+  private readonly logger = new Logger(TranslationService.name);
   private readonly model: ChatGoogleGenerativeAI;
+  private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
+  private readonly geminiApiKey: string;
+  private readonly uploadsDir = join(process.cwd(), 'uploads');
 
   constructor(private readonly configService: ConfigService) {
+    this.geminiApiKey = this.configService.getOrThrow<string>('GEMINI_API_KEY');
+
     this.model = new ChatGoogleGenerativeAI({
-      apiKey: this.configService.getOrThrow<string>('GEMINI_API_KEY'),
+      apiKey: this.geminiApiKey,
       model: 'gemini-3-flash-preview',
     });
   }
@@ -144,6 +170,12 @@ You MUST ALWAYS output translations in ALL THREE of these formats:
 - "tanglish": The Tamil written in English code-mixed colloquial form used in Sri Lanka.
 - "english": Standard, grammatically correct English.
 Also output a "transcription" field: for audio input this is the full verbatim transcript; for text input this is the COMPLETE original text exactly as written, preserving all lines and formatting.
+Also output a "detectedLanguage" field with one of: "english", "singlish", "tanglish", "mixed", "unknown".
+Also output an "originalTone" field as a short phrase describing the speaker's tone (examples: "calm", "urgent", "excited", "serious", "neutral").
+LANGUAGE DETECTION RULES:
+- Return "mixed" when the message meaningfully combines two or more language styles (for example: English + Singlish, English + Tanglish, or Tanglish + Singlish) in the same utterance.
+- Return a single language only when one style is clearly dominant and other-language words are incidental.
+- If the language cannot be confidently identified, return "unknown".
 Calculate a confidence score (0-100). If the phrase is too ambiguous even with context, lower the score.
 CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitions if they appear in the text: ${payload.userDictionary}
 Always use terms which commonly used and easily understood by users. dont use neche terms used by only a small group of people. If the input contains terms that are not commonly used, replace them with more common alternatives in the translations, but keep the original term in the transcription.
@@ -232,10 +264,191 @@ Examples of messages WITHOUT actions:
       finalHumanMessage = new HumanMessage(payload.rawText ?? '');
     }
 
-    return structuredModel.invoke([
+    const result = await structuredModel.invoke([
       systemMessage,
       ...historyMessages,
       finalHumanMessage,
     ]);
+
+    return {
+      ...result,
+      detectedLanguage: result.detectedLanguage ?? 'unknown',
+      originalTone: result.originalTone ?? 'neutral',
+    };
+  }
+
+  async generateTranslatedAudioFiles(params: {
+    translations: Translations;
+    detectedLanguage: DetectedLanguage;
+    originalTone: string;
+  }): Promise<TranslatedAudioUrls> {
+    const targets = this.getTargetLanguages(params.detectedLanguage);
+    if (targets.length === 0) return {};
+
+    await fs.promises.mkdir(this.uploadsDir, { recursive: true });
+
+    const output: TranslatedAudioUrls = {};
+    for (const language of targets) {
+      const text = params.translations[language]?.trim();
+      if (!text) continue;
+
+      try {
+        const wavAudio = await this.generateSpeechWav({
+          transcript: text,
+          language,
+          tone: params.originalTone,
+        });
+
+        const fileName = `tts-${language}-${randomUUID()}.wav`;
+        await fs.promises.writeFile(join(this.uploadsDir, fileName), wavAudio);
+        output[language] = `${this.getBaseUrl()}/uploads/${fileName}`;
+      } catch (error) {
+        this.logger.warn(
+          `[generateTranslatedAudioFiles] Failed for ${language}: ${String(error)}`,
+        );
+      }
+    }
+
+    return output;
+  }
+
+  private getTargetLanguages(detectedLanguage: DetectedLanguage): SupportedLanguage[] {
+    switch (detectedLanguage) {
+      case 'singlish':
+        return ['english', 'tanglish'];
+      case 'tanglish':
+        return ['english', 'singlish'];
+      case 'english':
+        return ['singlish', 'tanglish'];
+      case 'mixed':
+      case 'unknown':
+      default:
+        return ['english', 'singlish', 'tanglish'];
+    }
+  }
+
+  private async generateSpeechWav(params: {
+    transcript: string;
+    language: SupportedLanguage;
+    tone: string;
+  }): Promise<Buffer> {
+    const prompt = this.buildTtsPrompt(params);
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${this.ttsModel}:generateContent`,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: 'Achird',
+              },
+            },
+          },
+        },
+        model: this.ttsModel,
+      },
+      {
+        headers: {
+          'x-goog-api-key': this.geminiApiKey,
+          'Content-Type': 'application/json',
+        },
+        timeout: 45_000,
+      },
+    );
+
+    const encoded = this.extractInlineAudioBase64(response.data);
+    if (!encoded) {
+      throw new Error('Gemini TTS response did not include inline audio data');
+    }
+
+    const pcm = Buffer.from(encoded, 'base64');
+    return this.pcm16ToWav(pcm, 24_000, 1);
+  }
+
+  private extractInlineAudioBase64(payload: unknown): string | null {
+    if (!payload || typeof payload !== 'object') return null;
+
+    const candidates = (payload as { candidates?: unknown[] }).candidates;
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    for (const candidate of candidates) {
+      const parts =
+        (candidate as {
+          content?: { parts?: Array<{ inlineData?: { data?: string } }> };
+        }).content?.parts ?? [];
+
+      for (const part of parts) {
+        const data = part.inlineData?.data;
+        if (typeof data === 'string' && data.length > 0) {
+          return data;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private buildTtsPrompt(params: {
+    transcript: string;
+    language: SupportedLanguage;
+    tone: string;
+  }): string {
+    const accentHint =
+      params.language === 'tanglish'
+        ? 'Sri Lankan Tamil-influenced accent'
+        : params.language === 'singlish'
+          ? 'Sri Lankan Sinhala-influenced accent'
+          : 'clear Sri Lankan English accent';
+
+    return [
+      '# AUDIO PROFILE: LinkLanka Voice Talent',
+      '## "Chat Voice Translation"',
+      '',
+      '## THE SCENE: A friendly chat voice note played inside a messaging app.',
+      '',
+      '### DIRECTOR\'S NOTES',
+      `Style: ${params.tone || 'neutral'}`,
+      'Pacing: Natural conversational pacing with clear diction.',
+      `Accent: ${accentHint}`,
+      'Pronunciation: If transliterated Sri Lankan words appear, pronounce them naturally as used in Sri Lanka.',
+      '',
+      '#### TRANSCRIPT',
+      params.transcript,
+    ].join('\n');
+  }
+
+  private getBaseUrl(): string {
+    const baseUrl = this.configService.get<string>('BASE_URL');
+    return (baseUrl && baseUrl.trim()) || 'http://localhost:3000';
+  }
+
+  private pcm16ToWav(
+    pcmData: Buffer,
+    sampleRate: number,
+    channels: number,
+  ): Buffer {
+    const bitsPerSample = 16;
+    const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+    const blockAlign = (channels * bitsPerSample) / 8;
+    const wavHeader = Buffer.alloc(44);
+
+    wavHeader.write('RIFF', 0);
+    wavHeader.writeUInt32LE(36 + pcmData.length, 4);
+    wavHeader.write('WAVE', 8);
+    wavHeader.write('fmt ', 12);
+    wavHeader.writeUInt32LE(16, 16);
+    wavHeader.writeUInt16LE(1, 20);
+    wavHeader.writeUInt16LE(channels, 22);
+    wavHeader.writeUInt32LE(sampleRate, 24);
+    wavHeader.writeUInt32LE(byteRate, 28);
+    wavHeader.writeUInt16LE(blockAlign, 32);
+    wavHeader.writeUInt16LE(bitsPerSample, 34);
+    wavHeader.write('data', 36);
+    wavHeader.writeUInt32LE(pcmData.length, 40);
+
+    return Buffer.concat([wavHeader, pcmData]);
   }
 }

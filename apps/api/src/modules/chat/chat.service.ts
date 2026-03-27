@@ -7,6 +7,8 @@ import { MessageHiddenByUser } from './entities/message-hidden-by-user.entity';
 import {
   Translations,
   ExtractedAction,
+  DetectedLanguage,
+  TranslatedAudioUrls,
 } from '../translation/translation.service';
 
 export interface SearchResult {
@@ -155,6 +157,9 @@ export class ChatService {
     updates: {
       transcription?: string | null;
       translations: Translations | null;
+      detectedLanguage?: DetectedLanguage | null;
+      originalTone?: string | null;
+      translatedAudioUrls?: TranslatedAudioUrls | null;
       confidenceScore: number;
       extractedActions?: ExtractedAction[] | null;
     },
@@ -165,6 +170,15 @@ export class ChatService {
     };
     if (updates.transcription !== undefined) {
       updatePayload.transcription = updates.transcription as string;
+    }
+    if (updates.detectedLanguage !== undefined) {
+      updatePayload.detectedLanguage = updates.detectedLanguage;
+    }
+    if (updates.originalTone !== undefined) {
+      updatePayload.originalTone = updates.originalTone;
+    }
+    if (updates.translatedAudioUrls !== undefined) {
+      updatePayload.translatedAudioUrls = updates.translatedAudioUrls;
     }
     if (updates.extractedActions !== undefined) {
       updatePayload.extractedActions = updates.extractedActions ?? null;

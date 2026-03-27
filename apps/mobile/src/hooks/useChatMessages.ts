@@ -30,6 +30,13 @@ interface NewMessageEvent {
     singlish: string;
     tanglish: string;
   } | null;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: {
+    english?: string;
+    singlish?: string;
+    tanglish?: string;
+  } | null;
   confidenceScore?: number | null;
   extractedActions?: {
     type: 'MEETING' | 'REMINDER';
@@ -47,6 +54,13 @@ interface MessageTranslatedEvent {
     english: string;
     singlish: string;
     tanglish: string;
+  } | null;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: {
+    english?: string;
+    singlish?: string;
+    tanglish?: string;
   } | null;
   confidenceScore: number | null;
   extractedActions?: {
@@ -73,6 +87,13 @@ interface HistoryMessage {
     english: string;
     singlish: string;
     tanglish: string;
+  } | null;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: {
+    english?: string;
+    singlish?: string;
+    tanglish?: string;
   } | null;
   confidenceScore?: number | null;
   extractedActions?: {
@@ -101,6 +122,13 @@ interface MessageEditedEvent {
   messageId: string;
   newContent: string;
   translations: { english: string; singlish: string; tanglish: string } | null;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: {
+    english?: string;
+    singlish?: string;
+    tanglish?: string;
+  } | null;
   confidenceScore: number | null;
   isEdited: boolean;
 }
@@ -162,6 +190,9 @@ function historyToChatMessage(msg: HistoryMessage): ChatMessage {
     contentType: msg.contentType,
     rawContent: msg.rawContent,
     translations: msg.translations ?? null,
+    detectedLanguage: msg.detectedLanguage ?? null,
+    originalTone: msg.originalTone ?? null,
+    translatedAudioUrls: msg.translatedAudioUrls ?? null,
     confidenceScore: msg.confidenceScore ?? null,
     extractedActions: msg.extractedActions ?? null,
     isOptimistic: false,
@@ -179,6 +210,9 @@ function serverEventToChatMessage(evt: NewMessageEvent): ChatMessage {
     contentType: evt.contentType,
     rawContent: evt.fileUrl ?? evt.originalText ?? '',
     translations: evt.translations ?? null,
+    detectedLanguage: evt.detectedLanguage ?? null,
+    originalTone: evt.originalTone ?? null,
+    translatedAudioUrls: evt.translatedAudioUrls ?? null,
     confidenceScore: evt.confidenceScore ?? null,
     extractedActions: evt.extractedActions ?? null,
     isOptimistic: false,
@@ -476,6 +510,9 @@ export function useChatMessages({
       enqueueMessagesPatch((ctx) => updateMessageById(ctx, evt.messageId, (m) => ({
         ...m,
         translations: evt.translations,
+        detectedLanguage: evt.detectedLanguage ?? m.detectedLanguage,
+        originalTone: evt.originalTone ?? m.originalTone,
+        translatedAudioUrls: evt.translatedAudioUrls ?? m.translatedAudioUrls,
         confidenceScore: evt.confidenceScore,
         extractedActions: evt.extractedActions ?? m.extractedActions,
         isTranslating: false,
@@ -564,6 +601,9 @@ export function useChatMessages({
         ...m,
         rawContent: evt.newContent,
         translations: evt.translations,
+        detectedLanguage: evt.detectedLanguage ?? m.detectedLanguage,
+        originalTone: evt.originalTone ?? m.originalTone,
+        translatedAudioUrls: evt.translatedAudioUrls ?? m.translatedAudioUrls,
         confidenceScore: evt.confidenceScore,
         isEdited: true,
         isRetrying: false,
@@ -755,6 +795,9 @@ export function useChatMessages({
           isRetrying: false,
           isTranslating: false,
           translations: result.translations,
+          detectedLanguage: result.detectedLanguage ?? m.detectedLanguage,
+          originalTone: result.originalTone ?? m.originalTone,
+          translatedAudioUrls: result.translatedAudioUrls ?? m.translatedAudioUrls,
           confidenceScore: result.confidenceScore,
         })));
       } catch (err) {

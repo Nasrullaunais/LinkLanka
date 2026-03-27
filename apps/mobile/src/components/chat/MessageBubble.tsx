@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import * as Speech from 'expo-speech';
 import {
   Pressable,
   StyleSheet,
@@ -35,12 +34,21 @@ interface Translations {
   tanglish: string;
 }
 
+interface TranslatedAudioUrls {
+  english?: string;
+  singlish?: string;
+  tanglish?: string;
+}
+
 export interface ChatMessage {
   id: string;
   senderId: string;
   contentType: 'TEXT' | 'AUDIO' | 'IMAGE' | 'DOCUMENT';
   rawContent: string;
   translations?: Translations | null;
+  detectedLanguage?: 'english' | 'singlish' | 'tanglish' | 'mixed' | 'unknown' | null;
+  originalTone?: string | null;
+  translatedAudioUrls?: TranslatedAudioUrls | null;
   confidenceScore?: number | null;
   extractedActions?: ExtractedAction[] | null;
   isOptimistic?: boolean;
@@ -380,6 +388,7 @@ interface TranslationSectionProps {
   isOptimistic?: boolean;
   contentType: string;
   translations?: Translations | null;
+  translatedAudioUrls?: TranslatedAudioUrls | null;
   preferredLanguage: 'english' | 'singlish' | 'tanglish';
   confidenceScore?: number | null;
   messageId: string;
@@ -395,12 +404,14 @@ const TranslationSection = memo(function TranslationSection({
   isOptimistic,
   contentType,
   translations,
+  translatedAudioUrls,
   preferredLanguage,
   confidenceScore,
   messageId,
   onRetry,
 }: TranslationSectionProps) {
   const { colors } = useTheme();
+  const audioCtx = useChatAudioPlayer();
 
   const translationCacheKey = `${messageId}:${preferredLanguage}`;
   const cachedLayout = translationLayoutCache.get(translationCacheKey);
@@ -418,35 +429,33 @@ const TranslationSection = memo(function TranslationSection({
     transform: [{ rotate: `${translationChevronAngle.value}deg` }],
   }));
 
-  // ── Text-to-Speech for translated audio messages ──────────────────────
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const translatedAudioEntries = useMemo(() => {
+    if (contentType !== 'AUDIO' || isOwn || !translatedAudioUrls) return [];
 
-  const showListenButton =
-    contentType === 'AUDIO' &&
-    !isOwn &&
-    preferredLanguage === 'english' &&
-    !!translations?.english;
+    const labels: Record<'english' | 'singlish' | 'tanglish', string> = {
+      english: 'English',
+      singlish: 'Singlish',
+      tanglish: 'Tanglish',
+    };
 
-  const handleListenPress = useCallback(() => {
-    if (!translations?.english) return;
-    if (isSpeaking) {
-      Speech.stop();
-      setIsSpeaking(false);
-      return;
-    }
-    setIsSpeaking(true);
-    Speech.speak(translations.english, {
-      language: 'en-US',
-      rate: 0.95,
-      onDone: () => setIsSpeaking(false),
-      onStopped: () => setIsSpeaking(false),
-      onError: () => setIsSpeaking(false),
-    });
-  }, [translations?.english, isSpeaking]);
+    const preferredUrl = translatedAudioUrls[preferredLanguage];
+    if (!preferredUrl) return [];
 
-  useEffect(() => {
-    return () => { Speech.stop(); };
-  }, []);
+    return [
+      {
+        language: preferredLanguage,
+        label: labels[preferredLanguage],
+        url: preferredUrl,
+      },
+    ];
+  }, [contentType, isOwn, preferredLanguage, translatedAudioUrls]);
+
+  const handleTranslatedAudioPress = useCallback(
+    (language: 'english' | 'singlish' | 'tanglish', url: string) => {
+      audioCtx.toggle(`${messageId}:translated:${language}`, normalizeAudioUri(url));
+    },
+    [audioCtx, messageId],
+  );
 
   // ── Branching renders ─────────────────────────────────────────────────
   if (isOwn) return null;
@@ -534,28 +543,26 @@ const TranslationSection = memo(function TranslationSection({
       )}
 
       <View style={styles.translationFooter}>
-        {showListenButton && (
-          <Pressable
-            onPress={handleListenPress}
-            hitSlop={8}
-            style={({ pressed }) => [
-              styles.listenBtn,
-              { backgroundColor: isSpeaking ? colors.primaryLight : colors.confidenceBg },
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <Ionicons
-              name={isSpeaking ? 'stop-circle' : 'volume-high'}
-              size={13}
-              color={isSpeaking ? '#fff' : colors.primaryLight}
-            />
-            <Text style={[
-              styles.listenText,
-              { color: isSpeaking ? '#fff' : colors.primaryLight },
-            ]}>
-              {isSpeaking ? 'Stop' : 'Listen'}
-            </Text>
-          </Pressable>
+        {translatedAudioEntries.length > 0 && (
+          <View style={styles.translatedAudioRow}>
+            {translatedAudioEntries.map((entry) => (
+              <Pressable
+                key={entry.language}
+                onPress={() => handleTranslatedAudioPress(entry.language, entry.url)}
+                hitSlop={8}
+                style={({ pressed }) => [
+                  styles.translatedAudioBtn,
+                  { backgroundColor: colors.confidenceBg },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name="play" size={12} color={colors.primaryLight} />
+                <Text style={[styles.translatedAudioText, { color: colors.primaryLight }]}>
+                  {entry.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
         )}
 
         {score != null && (
@@ -732,7 +739,7 @@ function MessageBubble({
         }
         
         const isInaudible =
-          confidenceScore !== null &&
+          confidenceScore != null &&
           confidenceScore <= 25 &&
           !translations &&
           !message.isTranslating &&
@@ -843,6 +850,7 @@ function MessageBubble({
               isOptimistic={isOptimistic}
               contentType={contentType}
               translations={translations}
+              translatedAudioUrls={message.translatedAudioUrls}
               preferredLanguage={preferredLanguage}
               confidenceScore={confidenceScore}
               messageId={message.id}
@@ -877,6 +885,9 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     pm.isEdited === nm.isEdited &&
     pm.confidenceScore === nm.confidenceScore &&
     pm.translations === nm.translations &&
+    pm.translatedAudioUrls === nm.translatedAudioUrls &&
+    pm.detectedLanguage === nm.detectedLanguage &&
+    pm.originalTone === nm.originalTone &&
     pm.extractedActions === nm.extractedActions &&
     prev.currentUserId === next.currentUserId &&
     prev.onRetry === next.onRetry &&
@@ -1121,8 +1132,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // Listen (TTS) button
-  listenBtn: {
+  translatedAudioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  translatedAudioBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
@@ -1130,7 +1146,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 10,
   },
-  listenText: {
+  translatedAudioText: {
     fontSize: 11,
     fontWeight: '600',
   },

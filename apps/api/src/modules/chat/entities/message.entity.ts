@@ -11,6 +11,8 @@ import { ChatGroup } from './chat-group.entity';
 import {
   Translations,
   ExtractedAction,
+  DetectedLanguage,
+  TranslatedAudioUrls,
 } from '../../translation/translation.service';
 
 export enum MessageContentType {
@@ -56,6 +58,15 @@ export class Message {
 
   @Column({ type: 'jsonb', nullable: true })
   translations: Translations | null;
+
+  @Column({ type: 'varchar', name: 'detected_language', nullable: true })
+  detectedLanguage: DetectedLanguage | null;
+
+  @Column({ type: 'varchar', name: 'original_tone', nullable: true })
+  originalTone: string | null;
+
+  @Column({ type: 'jsonb', name: 'translated_audio_urls', nullable: true })
+  translatedAudioUrls: TranslatedAudioUrls | null;
 
   @Column({ type: 'smallint', name: 'confidence_score', nullable: true })
   confidenceScore: number | null;

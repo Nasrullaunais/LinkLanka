@@ -21,7 +21,11 @@ import { ChatGateway } from '../chat/chat.gateway';
 import { MessageContentType } from '../chat/entities/message.entity';
 import { AudioService } from './audio.service';
 import { ActionService } from '../actions/action.service';
-import { ExtractedAction } from '../translation/translation.service';
+import {
+  DetectedLanguage,
+  ExtractedAction,
+  TranslatedAudioUrls,
+} from '../translation/translation.service';
 
 /** What the mobile client POSTs to /audio/process */
 interface ProcessAudioDto {
@@ -222,8 +226,14 @@ export class AudioController {
       timezone,
     });
 
-    const { transcription, translations, confidenceScore, extractedActions } =
-      result;
+    const {
+      transcription,
+      translations,
+      detectedLanguage,
+      originalTone,
+      confidenceScore,
+      extractedActions,
+    } = result;
 
     // ── Audibility gate ───────────────────────────────────────────────────
     const appearsInaudible =
@@ -242,6 +252,9 @@ export class AudioController {
       await this.chatService.updateMessageWithTranslation(messageId, {
         transcription: null,
         translations: null,
+        detectedLanguage: null,
+        originalTone: null,
+        translatedAudioUrls: null,
         confidenceScore: inaudibleScore,
         extractedActions: null,
       });
@@ -253,12 +266,28 @@ export class AudioController {
           messageId,
           transcription: null,
           translations: null,
+          detectedLanguage: null,
+          originalTone: null,
+          translatedAudioUrls: null,
           confidenceScore: inaudibleScore,
           extractedActions: null,
         },
         '',
       );
       return;
+    }
+
+    let translatedAudioUrls: TranslatedAudioUrls | null = null;
+    try {
+      translatedAudioUrls = await this.translationService.generateTranslatedAudioFiles({
+        translations,
+        detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+        originalTone: originalTone ?? 'neutral',
+      });
+    } catch (error) {
+      this.logger.warn(
+        `[transcribeAndBroadcast] TTS generation failed for messageId=${messageId}: ${String(error)}`,
+      );
     }
 
     // ── Process extracted actions ─────────────────────────────────────────
@@ -284,6 +313,9 @@ export class AudioController {
     await this.chatService.updateMessageWithTranslation(messageId, {
       transcription,
       translations,
+      detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+      originalTone: originalTone ?? 'neutral',
+      translatedAudioUrls,
       confidenceScore,
       extractedActions: processedActions,
     });
@@ -300,6 +332,9 @@ export class AudioController {
         messageId,
         transcription,
         translations,
+          detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+          originalTone: originalTone ?? 'neutral',
+          translatedAudioUrls,
         confidenceScore,
         extractedActions: processedActions,
       },

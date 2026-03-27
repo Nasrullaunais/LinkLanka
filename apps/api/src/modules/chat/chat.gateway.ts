@@ -28,8 +28,10 @@ import {
 import { Message, MessageContentType } from './entities/message.entity';
 import { WsAllExceptionsFilter } from '../../core/common/filters/ws-all-exceptions.filter';
 import {
+  DetectedLanguage,
   Translations,
   ExtractedAction,
+  TranslatedAudioUrls,
 } from '../translation/translation.service';
 
 interface JoinRoomPayload {
@@ -268,6 +270,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       transcription: null,
       originalText,
       translations: null,
+      detectedLanguage: null,
+      originalTone: null,
+      translatedAudioUrls: null,
       confidenceScore: null,
       extractedActions: null,
     });
@@ -312,6 +317,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     let transcription: string | null = null;
     let translations: Translations | null = null;
+    let detectedLanguage: DetectedLanguage | null = null;
+    let originalTone: string | null = null;
+    let translatedAudioUrls: TranslatedAudioUrls | null = null;
     let confidenceScore = 0;
     let extractedActions: ExtractedAction[] | null = null;
 
@@ -331,6 +339,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         transcription = result.transcription;
         translations = result.translations;
+        detectedLanguage = result.detectedLanguage;
+        originalTone = result.originalTone;
         confidenceScore = result.confidenceScore;
         extractedActions = result.extractedActions ?? null;
       } else {
@@ -343,6 +353,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         transcription = result.transcription;
         translations = result.translations;
+        detectedLanguage = result.detectedLanguage;
+        originalTone = result.originalTone;
         confidenceScore = result.confidenceScore;
         extractedActions = result.extractedActions ?? null;
       }
@@ -362,6 +374,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       await this.chatService.updateMessageWithTranslation(messageId, {
         transcription,
         translations,
+        detectedLanguage,
+        originalTone,
+        translatedAudioUrls,
         confidenceScore,
         extractedActions: processedActions,
       });
@@ -375,6 +390,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         messageId,
         transcription,
         translations,
+        detectedLanguage,
+        originalTone,
+        translatedAudioUrls,
         confidenceScore,
         extractedActions: processedActions,
       });
@@ -414,6 +432,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       transcription: string | null;
       originalText: string | null;
       translations: Translations | null;
+      detectedLanguage?: DetectedLanguage | null;
+      originalTone?: string | null;
+      translatedAudioUrls?: TranslatedAudioUrls | null;
       confidenceScore: number | null;
       extractedActions?: ExtractedAction[] | null;
     },
@@ -435,6 +456,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       messageId: string;
       transcription: string | null;
       translations: Translations | null;
+      detectedLanguage?: DetectedLanguage | null;
+      originalTone?: string | null;
+      translatedAudioUrls?: TranslatedAudioUrls | null;
       confidenceScore: number;
       extractedActions?: ExtractedAction[] | null;
     },
@@ -480,6 +504,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       transcription: string | null;
       originalText: string | null;
       translations: Translations | null;
+      detectedLanguage?: DetectedLanguage | null;
+      originalTone?: string | null;
+      translatedAudioUrls?: TranslatedAudioUrls | null;
       confidenceScore: number;
       extractedActions?: ExtractedAction[] | null;
     },
