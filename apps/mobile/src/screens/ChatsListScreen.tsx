@@ -16,6 +16,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../contexts/AuthContext';
+import { useSocket } from '../contexts/SocketContext';
 import { useTheme } from '../contexts/ThemeContext';
 import {
   fetchGroups,
@@ -174,6 +175,7 @@ const UserRow = memo(function UserRow({
 export default function ChatsListScreen() {
   const navigation = useNavigation<AppNav>();
   const { logout, userDisplayName, userDialect, userProfilePicture } = useAuth();
+  const { socket, isConnected } = useSocket();
   const { isDark, colors, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -185,20 +187,63 @@ export default function ChatsListScreen() {
   const [isSearching, setIsSearching] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Load groups ──────────────────────────────────────────────────────────
-  const loadGroups = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(false);
+  const loadGroups = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setIsLoading(true);
+      setLoadError(false);
+    }
+
     try {
       const data = await fetchGroups();
       setGroups(data);
     } catch {
-      setLoadError(true);
+      if (!silent) {
+        setLoadError(true);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
+
+  const scheduleRealtimeRefresh = useCallback(() => {
+    if (realtimeRefreshRef.current) return;
+
+    realtimeRefreshRef.current = setTimeout(() => {
+      realtimeRefreshRef.current = null;
+      void loadGroups({ silent: true });
+    }, 220);
+  }, [loadGroups]);
+
+  useEffect(() => {
+    return () => {
+      if (realtimeRefreshRef.current) {
+        clearTimeout(realtimeRefreshRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    const handleConversationUpdated = () => {
+      scheduleRealtimeRefresh();
+    };
+
+    socket.on('conversationUpdated', handleConversationUpdated);
+
+    // Catch up immediately after reconnect in case an event was missed.
+    scheduleRealtimeRefresh();
+
+    return () => {
+      socket.off('conversationUpdated', handleConversationUpdated);
+    };
+  }, [socket, isConnected, scheduleRealtimeRefresh]);
 
   // Safety-net: fire loadGroups on mount regardless of navigation focus state.
   // On first login the entire navigator tree is created from scratch while the
@@ -422,7 +467,7 @@ export default function ChatsListScreen() {
         <View style={styles.centered}>
           <Ionicons name="cloud-offline-outline" size={48} color={colors.emptyIcon} />
           <Text style={[styles.emptyText, { color: colors.emptyText }]}>Could not load chats</Text>
-          <Pressable onPress={loadGroups} style={[styles.retryBtn, { backgroundColor: colors.primary }]}>
+          <Pressable onPress={() => { void loadGroups(); }} style={[styles.retryBtn, { backgroundColor: colors.primary }]}> 
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>

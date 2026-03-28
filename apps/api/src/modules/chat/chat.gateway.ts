@@ -129,6 +129,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const payload: WsUserPayload =
         await this.jwtService.verifyAsync<WsUserPayload>(token);
       client.user = payload;
+      await client.join(this.userRoom(payload.sub));
       this.logger.log(
         `Socket connected: ${client.id}, userId=${payload.sub}, email=${payload.email}`,
       );
@@ -191,6 +192,34 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
 
     return { joinedGroupId: normalizedPayload.groupId };
+  }
+
+  @SubscribeMessage('leaveRoom')
+  async leaveRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: RawJoinRoomPayload,
+  ): Promise<{ leftGroupId: string }> {
+    const normalizedPayload: JoinRoomPayload =
+      this.normalizeJoinRoomPayload(payload);
+
+    const authenticatedClient = client as AuthenticatedSocket;
+    const userId = authenticatedClient.user?.sub;
+
+    if (!userId) {
+      throw new WsException('Unauthorized');
+    }
+
+    await client.leave(normalizedPayload.groupId);
+    this.logger.log(
+      `Socket ${client.id} left room ${normalizedPayload.groupId}`,
+    );
+
+    client.emit('roomLeft', {
+      leftGroupId: normalizedPayload.groupId,
+      socketId: client.id,
+    });
+
+    return { leftGroupId: normalizedPayload.groupId };
   }
 
   @UseGuards(WsJwtGuard)
@@ -277,6 +306,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       extractedActions: null,
     });
 
+    this.emitConversationUpdated(normalizedPayload.groupId).catch((err) =>
+      this.logger.warn(
+        `[emitConversationUpdated] groupId=${normalizedPayload.groupId} failed: ${String(err)}`,
+      ),
+    );
+
     this.logger.log(
       `newMessage broadcasted (Phase 1, no translations) to room ${normalizedPayload.groupId}`,
     );
@@ -319,7 +354,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     let translations: Translations | null = null;
     let detectedLanguage: DetectedLanguage | null = null;
     let originalTone: string | null = null;
-    let translatedAudioUrls: TranslatedAudioUrls | null = null;
+    const translatedAudioUrls: TranslatedAudioUrls | null = null;
     let confidenceScore = 0;
     let extractedActions: ExtractedAction[] | null = null;
 
@@ -415,6 +450,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Notify the room that translation failed so clients can show a retry button
       this.server.to(groupId).emit('translationFailed', { messageId });
+
+      const fallbackBody =
+        normalizedPayload.rawContent?.trim() ||
+        (contentType === MessageContentType.AUDIO
+          ? 'Sent an audio message'
+          : contentType === MessageContentType.IMAGE
+            ? 'Sent an image'
+            : contentType === MessageContentType.DOCUMENT
+              ? 'Sent a document'
+              : 'Sent a message');
+
+      this.sendChatNotification(groupId, userId, null, fallbackBody).catch(
+        (notifyErr) =>
+          this.logger.error(
+            `[sendChatNotification] translation-failed fallback: ${String(notifyErr)}`,
+          ),
+      );
     }
   }
 
@@ -440,6 +492,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     },
   ): void {
     this.server.to(groupId).emit('newMessage', payload);
+    this.emitConversationUpdated(groupId).catch((err) =>
+      this.logger.warn(
+        `[emitConversationUpdated] groupId=${groupId} failed: ${String(err)}`,
+      ),
+    );
     this.logger.log(
       `[broadcastNewMessage] newMessage emitted to room ${groupId}, messageId=${payload.messageId}`,
     );
@@ -933,6 +990,24 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           ? payload.timezone.trim()
           : undefined,
     };
+  }
+
+  private userRoom(userId: string): string {
+    return `user:${userId}`;
+  }
+
+  private async emitConversationUpdated(groupId: string): Promise<void> {
+    const members = await this.groupsService.findMembers(groupId);
+    const notifiedUserIds = new Set<string>();
+
+    for (const member of members) {
+      if (!member.userId || notifiedUserIds.has(member.userId)) continue;
+      notifiedUserIds.add(member.userId);
+      this.server.to(this.userRoom(member.userId)).emit('conversationUpdated', {
+        groupId,
+        at: new Date().toISOString(),
+      });
+    }
   }
 
   private normalizeJoinRoomPayload(

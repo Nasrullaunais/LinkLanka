@@ -12,6 +12,7 @@ import Animated, {
   useDerivedValue,
   useAnimatedReaction,
   withRepeat,
+  withDelay,
   withTiming,
   withSequence,
   runOnJS,
@@ -151,7 +152,7 @@ export function MediatingAnimProvider({ children }: { children: React.ReactNode 
 }
 
 /** Lightweight "AI mediating…" indicator — all animation values read from shared context. */
-function AIMediatingIndicator() {
+function AIMediatingIndicator({ label = 'AI mediating' }: { label?: string }) {
   const { colors } = useTheme();
   const anim = React.useContext(MediatingAnimContext);
 
@@ -188,7 +189,7 @@ function AIMediatingIndicator() {
     <View style={styles.mediatingRow}>
       <Ionicons name="sparkles" size={12} color={colors.mediatingColor} />
       <Animated.Text style={[styles.mediatingText, { color: colors.mediatingColor }, shimmerTextStyle]}>
-        AI mediating
+        {label}
       </Animated.Text>
       <View style={styles.mediatingDots}>
         <Animated.View style={[dotBase, dotStyle0]} />
@@ -379,12 +380,147 @@ const AudioPlayer = memo(function AudioPlayer({
   );
 });
 
+// ── AI Magic Translating Ripple ──────────────────────────────────────────────
+const TranslatingRippleOverlay = memo(function TranslatingRippleOverlay({
+  borderRadiusStyle,
+  rippleColor,
+}: {
+  borderRadiusStyle: any;
+  rippleColor: string;
+}) {
+  const rippleA = useSharedValue(0);
+  const rippleB = useSharedValue(0);
+  const shimmer = useSharedValue(0);
+
+  useEffect(() => {
+    rippleA.value = withRepeat(
+      withTiming(1, { duration: 1600, easing: Easing.out(Easing.quad) }),
+      -1,
+      false,
+    );
+    rippleB.value = withDelay(
+      800,
+      withRepeat(
+        withTiming(1, { duration: 1600, easing: Easing.out(Easing.quad) }),
+        -1,
+        false,
+      ),
+    );
+    shimmer.value = withRepeat(
+      withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true,
+    );
+  }, [rippleA, rippleB, shimmer]);
+
+  const rippleAStyle = useAnimatedStyle(() => ({
+    opacity: 0.28 * (1 - rippleA.value),
+    transform: [{ scale: 0.84 + rippleA.value * 0.56 }],
+  }));
+
+  const rippleBStyle = useAnimatedStyle(() => ({
+    opacity: 0.22 * (1 - rippleB.value),
+    transform: [{ scale: 0.78 + rippleB.value * 0.62 }],
+  }));
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.05 + shimmer.value * 0.12,
+  }));
+
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, borderRadiusStyle]}>
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.translatingRippleAmbient,
+          borderRadiusStyle,
+          { backgroundColor: rippleColor },
+          shimmerStyle,
+        ]}
+      />
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.translatingRipplePulse,
+          borderRadiusStyle,
+          { borderColor: rippleColor },
+          rippleAStyle,
+        ]}
+      />
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.translatingRipplePulse,
+          borderRadiusStyle,
+          { borderColor: rippleColor },
+          rippleBStyle,
+        ]}
+      />
+    </View>
+  );
+});
+
+// ── Interactive Translated Audio Button ──────────────────────────────────────
+const TranslatedAudioButton = memo(function TranslatedAudioButton({
+  entry,
+  messageId,
+}: {
+  entry: { language: 'english' | 'singlish' | 'tanglish'; label: string; url: string };
+  messageId: string;
+}) {
+  const audioCtx = useChatAudioPlayer();
+  const { colors } = useTheme();
+  const playbackId = `${messageId}:translated:${entry.language}`;
+
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  useAnimatedReaction(
+    () => audioCtx.activeMessageId.value === playbackId && audioCtx.isPlayingSV.value,
+    (playing, prev) => {
+      if (playing !== prev) {
+        runOnJS(setIsPlaying)(playing);
+      }
+    }
+  );
+
+  const fillStyle = useAnimatedStyle(() => {
+    if (audioCtx.activeMessageId.value !== playbackId) return { width: '0%' };
+    return { width: `${audioCtx.smoothProgress.value * 100}%` };
+  });
+
+  const handlePress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    audioCtx.toggle(playbackId, normalizeAudioUri(entry.url));
+  }, [audioCtx, playbackId, entry.url]);
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.translatedAudioBtn,
+        { backgroundColor: colors.confidenceBg, overflow: 'hidden' },
+        pressed && { opacity: 0.7 },
+      ]}
+    >
+      <Animated.View
+        style={[styles.translatedAudioBtnFill, { backgroundColor: colors.primaryFaded }, fillStyle]}
+      />
+      <Ionicons name={isPlaying ? 'pause' : 'play'} size={12} color={colors.primaryLight} />
+      <Text style={[styles.translatedAudioText, { color: colors.primaryLight }]}>
+        {entry.label}
+      </Text>
+    </Pressable>
+  );
+});
+
 // ── Translation Section (extracted to isolate animation hooks) ──────────────
 // Owns all translation expand/collapse & TTS state so that own-sent messages
 // (which never show a translation card) never allocate these hooks.
 interface TranslationSectionProps {
   isOwn: boolean;
   showMediating: boolean;
+  isRetrying?: boolean;
   isOptimistic?: boolean;
   contentType: string;
   translations?: Translations | null;
@@ -401,6 +537,7 @@ const translationLayoutCache = new Map<string, { fullHeight: number; truncatable
 const TranslationSection = memo(function TranslationSection({
   isOwn,
   showMediating,
+  isRetrying,
   isOptimistic,
   contentType,
   translations,
@@ -467,8 +604,8 @@ const TranslationSection = memo(function TranslationSection({
   if (showMediating) {
     return (
       <View style={styles.mediatingContainer}>
-        <AIMediatingIndicator />
-        {!isOptimistic && onRetry && (
+        <AIMediatingIndicator label={isRetrying ? 'AI retrying' : 'AI mediating'} />
+        {!isOptimistic && !isRetrying && onRetry && (
           <Pressable onPress={() => onRetry(messageId)} hitSlop={8} style={styles.retryBtn}>
             <Ionicons name="refresh" size={14} color={colors.mediatingColor} />
           </Pressable>
@@ -546,21 +683,11 @@ const TranslationSection = memo(function TranslationSection({
         {translatedAudioEntries.length > 0 && (
           <View style={styles.translatedAudioRow}>
             {translatedAudioEntries.map((entry) => (
-              <Pressable
+              <TranslatedAudioButton
                 key={entry.language}
-                onPress={() => handleTranslatedAudioPress(entry.language, entry.url)}
-                hitSlop={8}
-                style={({ pressed }) => [
-                  styles.translatedAudioBtn,
-                  { backgroundColor: colors.confidenceBg },
-                  pressed && { opacity: 0.7 },
-                ]}
-              >
-                <Ionicons name="play" size={12} color={colors.primaryLight} />
-                <Text style={[styles.translatedAudioText, { color: colors.primaryLight }]}>
-                  {entry.label}
-                </Text>
-              </Pressable>
+                entry={entry}
+                messageId={messageId}
+              />
             ))}
           </View>
         )}
@@ -822,19 +949,40 @@ function MessageBubble({
 
         <Animated.View style={[styles.row, isOwn ? styles.rowOwn : styles.rowOther, animatedBubbleSlide]}>
           <View style={styles.bubbleColumn}>
-            <Animated.View
-              style={[
-                styles.bubble,
-                {
-                  backgroundColor: isOwn ? colors.bubbleOwn : colors.bubbleReceived,
-                  shadowColor: colors.bubbleShadow,
-                },
-                isOwn ? styles.bubbleOwn : styles.bubbleOther,
-                isOptimistic ? optimisticPulseStyle : undefined,
-              ]}
-            >
-              {content}
-            </Animated.View>
+            {showMediating && !isOwn && contentType !== 'IMAGE' && contentType !== 'DOCUMENT' ? (
+              <Animated.View
+                style={[
+                  styles.bubble,
+                  styles.translatingBubble,
+                  {
+                    backgroundColor: colors.bubbleReceived,
+                    shadowColor: colors.bubbleShadow,
+                    borderColor: colors.primaryLight,
+                  },
+                  styles.bubbleOther,
+                ]}
+              >
+                <TranslatingRippleOverlay
+                  borderRadiusStyle={styles.bubbleMaskOther}
+                  rippleColor={colors.primaryLight}
+                />
+                {content}
+              </Animated.View>
+            ) : (
+              <Animated.View
+                style={[
+                  styles.bubble,
+                  {
+                    backgroundColor: isOwn ? colors.bubbleOwn : colors.bubbleReceived,
+                    shadowColor: colors.bubbleShadow,
+                  },
+                  isOwn ? styles.bubbleOwn : styles.bubbleOther,
+                  isOptimistic ? optimisticPulseStyle : undefined,
+                ]}
+              >
+                {content}
+              </Animated.View>
+            )}
 
             {/* "edited" label — shown for all participants once a message is edited */}
             {message.isEdited && (
@@ -847,6 +995,7 @@ function MessageBubble({
             <TranslationSection
               isOwn={isOwn}
               showMediating={showMediating}
+              isRetrying={isRetrying}
               isOptimistic={isOptimistic}
               contentType={contentType}
               translations={translations}
@@ -882,6 +1031,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     pm.senderId === nm.senderId &&
     pm.isOptimistic === nm.isOptimistic &&
     pm.isRetrying === nm.isRetrying &&
+    pm.isTranslating === nm.isTranslating &&
     pm.isEdited === nm.isEdited &&
     pm.confidenceScore === nm.confidenceScore &&
     pm.translations === nm.translations &&
@@ -977,6 +1127,20 @@ const styles = StyleSheet.create({
   },
   bubbleOther: {
     borderBottomLeftRadius: 4,
+  },
+  bubbleMaskOther: {
+    borderRadius: 18,
+    borderBottomLeftRadius: 4,
+  },
+  translatingBubble: {
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  translatingRippleAmbient: {
+    transform: [{ scale: 1.05 }],
+  },
+  translatingRipplePulse: {
+    borderWidth: 1,
   },
 
   // Text
@@ -1144,6 +1308,14 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 3,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  translatedAudioBtnFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
     borderRadius: 10,
   },
   translatedAudioText: {

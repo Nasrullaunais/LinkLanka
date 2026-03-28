@@ -135,8 +135,10 @@ export class AudioController {
     );
 
     // ── 4. Persist raw message (Phase 1 — no transcription/translation) ──
-    const durationMs = typeof body.durationMs === 'number' ? body.durationMs : 0;
-    const rawContent = durationMs > 0 ? JSON.stringify({ url: fileUrl, durationMs }) : fileUrl;
+    const durationMs =
+      typeof body.durationMs === 'number' ? body.durationMs : 0;
+    const rawContent =
+      durationMs > 0 ? JSON.stringify({ url: fileUrl, durationMs }) : fileUrl;
 
     const message = await this.chatService.saveMessage(
       userId,
@@ -245,7 +247,7 @@ export class AudioController {
       this.logger.warn(
         `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
       );
-      
+
       const inaudibleScore = confidenceScore ?? 0;
 
       // Persist as inaudible instead of bailing
@@ -272,18 +274,19 @@ export class AudioController {
           confidenceScore: inaudibleScore,
           extractedActions: null,
         },
-        '',
+        'Sent an audio message',
       );
       return;
     }
 
     let translatedAudioUrls: TranslatedAudioUrls | null = null;
     try {
-      translatedAudioUrls = await this.translationService.generateTranslatedAudioFiles({
-        translations,
-        detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
-        originalTone: originalTone ?? 'neutral',
-      });
+      translatedAudioUrls =
+        await this.translationService.generateTranslatedAudioFiles({
+          translations,
+          detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+          originalTone: originalTone ?? 'neutral',
+        });
     } catch (error) {
       this.logger.warn(
         `[transcribeAndBroadcast] TTS generation failed for messageId=${messageId}: ${String(error)}`,
@@ -332,9 +335,9 @@ export class AudioController {
         messageId,
         transcription,
         translations,
-          detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
-          originalTone: originalTone ?? 'neutral',
-          translatedAudioUrls,
+        detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+        originalTone: originalTone ?? 'neutral',
+        translatedAudioUrls,
         confidenceScore,
         extractedActions: processedActions,
       },

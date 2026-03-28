@@ -64,7 +64,9 @@ export class NotificationService {
 
     // Filter out obviously invalid tokens
     const validTokens = tokens.filter(
-      (t) => t && t.startsWith('ExponentPushToken['),
+      (t) =>
+        !!t &&
+        (t.startsWith('ExponentPushToken[') || t.startsWith('ExpoPushToken[')),
     );
 
     if (validTokens.length === 0) {

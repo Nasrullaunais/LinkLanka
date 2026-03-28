@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Platform, ToastAndroid } from 'react-native';
 import type { Socket } from 'socket.io-client';
 
 import apiClient, { retranslateMessage, processAudio, uploadMedia } from '../services/api';
@@ -149,6 +149,15 @@ interface HideFailedEvent {
 }
 
 const PAGE_SIZE = 30;
+
+function showRetryStartedFeedback(): void {
+  if (Platform.OS === 'android') {
+    ToastAndroid.show('Retry started. AI is translating again.', ToastAndroid.SHORT);
+    return;
+  }
+
+  Alert.alert('Retry Started', 'AI is translating this message again.');
+}
 
 interface MessagePatchContext {
   messages: ChatMessage[];
@@ -632,6 +641,10 @@ export function useChatMessages({
     socket.on('editFailed', handleEditFailed);
 
     return () => {
+      // Keep server-side room membership aligned with this hook lifecycle.
+      // This runs on chat unmount and groupId changes.
+      socket.emit('leaveRoom', { groupId });
+
       socket.off('newMessage', handleNewMessage);
       socket.off('messageTranslated', handleMessageTranslated);
       socket.off('translationFailed', handleTranslationFailed);
@@ -788,6 +801,7 @@ export function useChatMessages({
         isRetrying: true,
         translations: null,
       })));
+      showRetryStartedFeedback();
       try {
         const result = await retranslateMessage(messageId);
         enqueueMessagesPatch((ctx) => updateMessageById(ctx, messageId, (m) => ({
