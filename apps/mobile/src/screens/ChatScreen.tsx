@@ -403,6 +403,26 @@ export default function ChatScreen({ navigation, route }: Props) {
   const flatListRef = useRef<FlashListRef<ChatMessage>>(null);
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
+  const initialAnimatedMessageCountRef = useRef<number | null>(null);
+  const [shouldAnimateInitialMessages, setShouldAnimateInitialMessages] = useState(true);
+
+  useEffect(() => {
+    setShouldAnimateInitialMessages(true);
+    initialAnimatedMessageCountRef.current = null;
+  }, [groupId]);
+
+  useEffect(() => {
+    if (isLoadingHistory) return;
+    if (initialAnimatedMessageCountRef.current == null) {
+      initialAnimatedMessageCountRef.current = messages.length;
+    }
+
+    const timer = setTimeout(() => {
+      setShouldAnimateInitialMessages(false);
+    }, 900);
+
+    return () => clearTimeout(timer);
+  }, [isLoadingHistory, messages.length]);
 
   // ── Scroll-to-bottom FAB ─────────────────────────────────────────────
   const isScrolledUpRef = useRef(false);
@@ -617,17 +637,33 @@ export default function ChatScreen({ navigation, route }: Props) {
 
   // ── Render helpers ──────────────────────────────────────────────────────
   const renderItem = useCallback(
-    ({ item }: { item: ChatMessage }) => (
+    ({ item, index }: { item: ChatMessage; index: number }) => {
+      const baseCount = initialAnimatedMessageCountRef.current ?? messagesRef.current.length;
+      const distanceFromBottom = Math.max(0, baseCount - 1 - index);
+      const enterDelayMs = shouldAnimateInitialMessages
+        ? Math.min(distanceFromBottom * 14, 220)
+        : 0;
+
+      return (
       <MessageBubble
         message={item}
+        enterDelayMs={enterDelayMs}
         currentUserId={userId ?? ''}
         onRetry={handleRetry}
         onLongPress={handleLongPress}
         onPress={handleToggleSelect}
         onOpenDocumentInterrogation={handleOpenDocumentInterrogation}
       />
-    ),
-    [userId, handleRetry, handleLongPress, handleToggleSelect, handleOpenDocumentInterrogation],
+      );
+    },
+    [
+      userId,
+      shouldAnimateInitialMessages,
+      handleRetry,
+      handleLongPress,
+      handleToggleSelect,
+      handleOpenDocumentInterrogation,
+    ],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
@@ -750,7 +786,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           onCancel={cancelEdit}
           onConfirm={confirmEdit}
         />
-      ) : selectionMode ? null : (
+      ) : (
         <ChatInput onSendMessage={handleSendMessage} />
       )}
 

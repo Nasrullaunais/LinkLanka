@@ -28,8 +28,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import type { AppColors } from '../contexts/ThemeContext';
 import type { AppStackParamList } from '../navigation/types';
+import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'GroupInfo'>;
+const MIN_GROUP_NAME_LENGTH = 2;
 
 function getInitials(name: string): string {
   return name
@@ -106,6 +108,7 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(initialGroupName);
   const [isSavingName, setIsSavingName] = useState(false);
+  const [nameError, setNameError] = useState('');
 
   // Add member modal
   const [addModalVisible, setAddModalVisible] = useState(false);
@@ -113,6 +116,7 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
   const [searchResults, setSearchResults] = useState<UserItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isAdding, setIsAdding] = useState<string | null>(null);
+  const [addMemberError, setAddMemberError] = useState('');
 
   // Leave group
   const [isLeaving, setIsLeaving] = useState(false);
@@ -126,6 +130,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
       setMembers(data);
     } catch (err) {
       console.error('[GroupInfoScreen] Failed to load members:', err);
+      Alert.alert(
+        'Error',
+        getApiErrorMessage(err, 'Could not load group members. Please try again.'),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -139,13 +147,20 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
   const handleSaveName = useCallback(async () => {
     const name = editedName.trim();
     if (!name) {
-      Alert.alert('Invalid name', 'Group name cannot be empty.');
+      setNameError('Group name cannot be empty.');
+      return;
+    }
+    if (name.length < MIN_GROUP_NAME_LENGTH) {
+      setNameError(`Group name must be at least ${MIN_GROUP_NAME_LENGTH} characters.`);
       return;
     }
     if (name === groupName) {
+      setNameError('');
       setIsEditingName(false);
       return;
     }
+
+    setNameError('');
     setIsSavingName(true);
     try {
       await updateGroupName(groupId, name);
@@ -153,7 +168,9 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
       setIsEditingName(false);
     } catch (err) {
       console.error('[GroupInfoScreen] Failed to update name:', err);
-      Alert.alert('Error', 'Could not update group name. Please try again.');
+      const message = getApiErrorMessage(err, 'Could not update group name. Please try again.');
+      setNameError(message);
+      Alert.alert('Error', message);
     } finally {
       setIsSavingName(false);
     }
@@ -168,10 +185,12 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
     if (!query) {
       setSearchResults([]);
       setIsSearching(false);
+      setAddMemberError('');
       return;
     }
 
     setIsSearching(true);
+    setAddMemberError('');
     const memberIds = new Set(members.map((m) => m.userId));
     debounceRef.current = setTimeout(async () => {
       try {
@@ -179,6 +198,9 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
         setSearchResults(results.filter((r) => !memberIds.has(r.id)));
       } catch (err) {
         console.error('[GroupInfoScreen] Search failed:', err);
+        setAddMemberError(
+          getApiErrorMessage(err, 'Could not search users right now. Please try again.'),
+        );
       } finally {
         setIsSearching(false);
       }
@@ -193,12 +215,14 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
     setAddModalVisible(false);
     setMemberSearch('');
     setSearchResults([]);
+    setAddMemberError('');
   }, []);
 
   // ── Add member ───────────────────────────────────────────────────────────
   const handleAddMember = useCallback(
     async (user: UserItem) => {
       setIsAdding(user.id);
+      setAddMemberError('');
       try {
         await addGroupMember(groupId, user.id);
         closeAddModal();
@@ -206,7 +230,9 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
         setMembers(updated);
       } catch (err) {
         console.error('[GroupInfoScreen] Failed to add member:', err);
-        Alert.alert('Error', 'Could not add member. Please try again.');
+        const message = getApiErrorMessage(err, 'Could not add member. Please try again.');
+        setAddMemberError(message);
+        Alert.alert('Error', message);
       } finally {
         setIsAdding(null);
       }
@@ -232,7 +258,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
               navigation.reset({ index: 0, routes: [{ name: 'HomeTabs' }] });
             } catch (err) {
               console.error('[GroupInfoScreen] Failed to leave group:', err);
-              Alert.alert('Error', 'Could not leave the group. Please try again.');
+              Alert.alert(
+                'Error',
+                getApiErrorMessage(err, 'Could not leave the group. Please try again.'),
+              );
               setIsLeaving(false);
             }
           },
@@ -288,7 +317,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                     },
                   ]}
                   value={editedName}
-                  onChangeText={setEditedName}
+                  onChangeText={(value) => {
+                    setEditedName(value);
+                    if (nameError) setNameError('');
+                  }}
                   autoFocus
                   maxLength={80}
                   selectTextOnFocus
@@ -309,6 +341,7 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                   onPress={() => {
                     setIsEditingName(false);
                     setEditedName(groupName);
+                    setNameError('');
                   }}
                   style={[styles.nameActionBtn, { backgroundColor: colors.surface }]}
                 >
@@ -320,6 +353,7 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                 onPress={() => {
                   setIsEditingName(true);
                   setEditedName(groupName);
+                  setNameError('');
                 }}
                 style={styles.namePressable}
               >
@@ -332,6 +366,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                 />
               </Pressable>
             )}
+
+            {nameError ? (
+              <Text style={[styles.errorText, { color: colors.destructive }]}>{nameError}</Text>
+            ) : null}
 
             <Text style={[styles.memberCount, { color: colors.textSecondary }]}>
               {isLoading ? '…' : `${memberCount} member${memberCount !== 1 ? 's' : ''}`}
@@ -415,7 +453,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
               placeholder="Search by name…"
               placeholderTextColor={colors.inputPlaceholder}
               value={memberSearch}
-              onChangeText={setMemberSearch}
+              onChangeText={(value) => {
+                setMemberSearch(value);
+                if (addMemberError) setAddMemberError('');
+              }}
               autoFocus
               autoCapitalize="none"
             />
@@ -424,12 +465,17 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                 onPress={() => {
                   setMemberSearch('');
                   setSearchResults([]);
+                  setAddMemberError('');
                 }}
               >
                 <Ionicons name="close-circle" size={18} color={colors.textSecondary} />
               </Pressable>
             )}
           </View>
+
+          {addMemberError ? (
+            <Text style={[styles.modalErrorText, { color: colors.destructive }]}>{addMemberError}</Text>
+          ) : null}
 
           {/* Results */}
           {isSearching ? (
@@ -558,6 +604,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   memberCount: { fontSize: 14, marginBottom: 20 },
+  errorText: { fontSize: 13, textAlign: 'center', marginTop: 8, marginBottom: 12 },
   addMembersBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -628,6 +675,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   searchInput: { flex: 1, fontSize: 16 },
+  modalErrorText: {
+    fontSize: 13,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
   searchResultRow: {
     flexDirection: 'row',
     alignItems: 'center',

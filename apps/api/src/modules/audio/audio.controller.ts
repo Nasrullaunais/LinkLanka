@@ -206,66 +206,59 @@ export class AudioController {
     rawMime: string,
     timezone?: string,
   ): Promise<void> {
-    // Gemini only accepts 'audio/mp4' for AAC / M4A content.
-    const geminiMime = rawMime === 'audio/m4a' ? 'audio/mp4' : rawMime;
-    const savedFileName = fileUrl.split('/').pop()!;
-    const localFilePath = path.join(process.cwd(), 'uploads', savedFileName);
+    const phase2StartedAt = Date.now();
 
-    // ── Fetch user personalization dictionary ─────────────────────────────
-    const userDictionary =
-      await this.personalContextService.getUserDictionary(userId);
-
-    // ── Gemini transcription + translation ────────────────────────────────
     this.logger.log(
-      `[transcribeAndBroadcast] Running Gemini transcription for messageId=${messageId}`,
+      `[transcribeAndBroadcast] Phase 2 started for messageId=${messageId}`,
     );
 
-    const result = await this.translationService.translateIntent({
-      localFilePath,
-      fileMimeType: geminiMime,
-      chatHistory: [],
-      userDictionary,
-      timezone,
-    });
+    try {
+      // Gemini only accepts 'audio/mp4' for AAC / M4A content.
+      const geminiMime = rawMime === 'audio/m4a' ? 'audio/mp4' : rawMime;
+      const savedFileName = fileUrl.split('/').pop()!;
+      const localFilePath = path.join(process.cwd(), 'uploads', savedFileName);
 
-    const {
-      transcription,
-      translations,
-      detectedLanguage,
-      originalTone,
-      confidenceScore,
-      extractedActions,
-    } = result;
+      // ── Fetch user personalization dictionary ───────────────────────────
+      const userDictionary =
+        await this.personalContextService.getUserDictionary(userId);
 
-    // ── Audibility gate ───────────────────────────────────────────────────
-    const appearsInaudible =
-      (confidenceScore !== null && confidenceScore <= 25) ||
-      !transcription ||
-      transcription.trim().length === 0;
-
-    if (appearsInaudible) {
-      this.logger.warn(
-        `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
+      // ── Gemini transcription + translation ──────────────────────────────
+      this.logger.log(
+        `[transcribeAndBroadcast] Running Gemini transcription for messageId=${messageId}`,
       );
 
-      const inaudibleScore = confidenceScore ?? 0;
-
-      // Persist as inaudible instead of bailing
-      await this.chatService.updateMessageWithTranslation(messageId, {
-        transcription: null,
-        translations: null,
-        detectedLanguage: null,
-        originalTone: null,
-        translatedAudioUrls: null,
-        confidenceScore: inaudibleScore,
-        extractedActions: null,
+      const result = await this.translationService.translateIntent({
+        localFilePath,
+        fileMimeType: geminiMime,
+        chatHistory: [],
+        userDictionary,
+        timezone,
       });
 
-      this.chatGateway.broadcastTranslationUpdate(
-        groupId,
-        userId,
-        {
-          messageId,
+      const {
+        transcription,
+        translations,
+        detectedLanguage,
+        originalTone,
+        confidenceScore,
+        extractedActions,
+      } = result;
+
+      // ── Audibility gate ─────────────────────────────────────────────────
+      const appearsInaudible =
+        (confidenceScore !== null && confidenceScore <= 25) ||
+        !transcription ||
+        transcription.trim().length === 0;
+
+      if (appearsInaudible) {
+        this.logger.warn(
+          `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
+        );
+
+        const inaudibleScore = confidenceScore ?? 0;
+
+        // Persist as inaudible instead of bailing
+        await this.chatService.updateMessageWithTranslation(messageId, {
           transcription: null,
           translations: null,
           detectedLanguage: null,
@@ -273,66 +266,67 @@ export class AudioController {
           translatedAudioUrls: null,
           confidenceScore: inaudibleScore,
           extractedActions: null,
-        },
-        'Sent an audio message',
-      );
-      return;
-    }
-
-    let translatedAudioUrls: TranslatedAudioUrls | null = null;
-    try {
-      translatedAudioUrls =
-        await this.translationService.generateTranslatedAudioFiles({
-          translations,
-          detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
-          originalTone: originalTone ?? 'neutral',
         });
-    } catch (error) {
-      this.logger.warn(
-        `[transcribeAndBroadcast] TTS generation failed for messageId=${messageId}: ${String(error)}`,
-      );
-    }
 
-    // ── Process extracted actions ─────────────────────────────────────────
-    let processedActions: ExtractedAction[] | null = null;
-    if (
-      extractedActions &&
-      extractedActions.length > 0 &&
-      confidenceScore >= 60
-    ) {
-      processedActions = this.actionService.processActions(
-        messageId,
-        userId,
-        groupId,
-        extractedActions,
-      );
-    } else if (extractedActions && extractedActions.length > 0) {
-      this.logger.warn(
-        `[transcribeAndBroadcast] Discarding ${extractedActions.length} extracted action(s) due to low confidence (${confidenceScore}) for messageId=${messageId}`,
-      );
-    }
+        this.chatGateway.broadcastTranslationUpdate(
+          groupId,
+          userId,
+          {
+            messageId,
+            transcription: null,
+            translations: null,
+            detectedLanguage: null,
+            originalTone: null,
+            translatedAudioUrls: null,
+            confidenceScore: inaudibleScore,
+            extractedActions: null,
+          },
+          'Sent an audio message',
+        );
 
-    // ── Persist transcription + translations ──────────────────────────────
-    await this.chatService.updateMessageWithTranslation(messageId, {
-      transcription,
-      translations,
-      detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
-      originalTone: originalTone ?? 'neutral',
-      translatedAudioUrls,
-      confidenceScore,
-      extractedActions: processedActions,
-    });
+        this.logger.log(
+          `[transcribeAndBroadcast] Phase 2 completed for messageId=${messageId} status=inaudible durationMs=${Date.now() - phase2StartedAt}`,
+        );
 
-    this.logger.log(
-      `[transcribeAndBroadcast] Translation persisted (Phase 2): messageId=${messageId}`,
-    );
+        return;
+      }
 
-    // ── Broadcast translation update ──────────────────────────────────────
-    this.chatGateway.broadcastTranslationUpdate(
-      groupId,
-      userId,
-      {
-        messageId,
+      let translatedAudioUrls: TranslatedAudioUrls | null = null;
+      try {
+        translatedAudioUrls =
+          await this.translationService.generateTranslatedAudioFiles({
+            translations,
+            detectedLanguage: (detectedLanguage ??
+              'unknown') as DetectedLanguage,
+            originalTone: originalTone ?? 'neutral',
+          });
+      } catch (error) {
+        this.logger.warn(
+          `[transcribeAndBroadcast] TTS generation failed for messageId=${messageId}: ${String(error)}`,
+        );
+      }
+
+      // ── Process extracted actions ───────────────────────────────────────
+      let processedActions: ExtractedAction[] | null = null;
+      if (
+        extractedActions &&
+        extractedActions.length > 0 &&
+        confidenceScore >= 60
+      ) {
+        processedActions = this.actionService.processActions(
+          messageId,
+          userId,
+          groupId,
+          extractedActions,
+        );
+      } else if (extractedActions && extractedActions.length > 0) {
+        this.logger.warn(
+          `[transcribeAndBroadcast] Discarding ${extractedActions.length} extracted action(s) due to low confidence (${confidenceScore}) for messageId=${messageId}`,
+        );
+      }
+
+      // ── Persist transcription + translations ────────────────────────────
+      await this.chatService.updateMessageWithTranslation(messageId, {
         transcription,
         translations,
         detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
@@ -340,8 +334,37 @@ export class AudioController {
         translatedAudioUrls,
         confidenceScore,
         extractedActions: processedActions,
-      },
-      transcription ?? '',
-    );
+      });
+
+      this.logger.log(
+        `[transcribeAndBroadcast] Translation persisted (Phase 2): messageId=${messageId}`,
+      );
+
+      // ── Broadcast translation update ────────────────────────────────────
+      this.chatGateway.broadcastTranslationUpdate(
+        groupId,
+        userId,
+        {
+          messageId,
+          transcription,
+          translations,
+          detectedLanguage: (detectedLanguage ?? 'unknown') as DetectedLanguage,
+          originalTone: originalTone ?? 'neutral',
+          translatedAudioUrls,
+          confidenceScore,
+          extractedActions: processedActions,
+        },
+        transcription ?? '',
+      );
+
+      this.logger.log(
+        `[transcribeAndBroadcast] Phase 2 completed for messageId=${messageId} status=translated durationMs=${Date.now() - phase2StartedAt} translatedAudioCount=${Object.keys(translatedAudioUrls ?? {}).length}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `[transcribeAndBroadcast] Phase 2 failed for messageId=${messageId} durationMs=${Date.now() - phase2StartedAt}: ${String(error)}`,
+      );
+      throw error;
+    }
   }
 }

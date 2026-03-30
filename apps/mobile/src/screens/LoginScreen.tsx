@@ -16,6 +16,7 @@ import apiClient from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import type { AuthStackParamList } from '../navigation/types';
+import { getApiErrorMessage, isValidEmail, normalizeEmail } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
@@ -28,35 +29,54 @@ export default function LoginScreen({ navigation }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleLogin() {
-    if (!email || !password) {
+    const normalizedEmail = normalizeEmail(email);
+
+    if (!normalizedEmail || !password) {
       Alert.alert('Validation', 'Please enter both email and password.');
       return;
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      Alert.alert('Validation', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (normalizedEmail !== email) {
+      setEmail(normalizedEmail);
     }
 
     setIsSubmitting(true);
 
     try {
       const { data } = await apiClient.post('/auth/login', {
-        email,
+        email: normalizedEmail,
         password,
       });
 
       const { access_token } = data as { access_token: string };
 
       await login(access_token);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Log the full error so network-level failures are visible in the console
+      const err = error as {
+        message?: string;
+        code?: string;
+        response?: {
+          status?: number;
+          data?: unknown;
+        };
+      };
       console.error('[LoginScreen] handleLogin error:', {
-        message: error?.message,
-        code: error?.code,
-        status: error?.response?.status,
-        data: error?.response?.data,
+        message: err?.message,
+        code: err?.code,
+        status: err?.response?.status,
+        data: err?.response?.data,
       });
 
-      // error.response is undefined for network errors (no connectivity,
-      // cleartext blocked, wrong IP, etc.) — surface that clearly.
-      const message = error?.response?.data?.message
-        ?? (error?.message ? `Network error: ${error.message}` : 'Something went wrong.');
+      const message = getApiErrorMessage(
+        error,
+        'Unable to log in right now. Please try again.',
+      );
 
       Alert.alert('Login Failed', message);
     } finally {

@@ -1,66 +1,119 @@
 # LinkLanka Setup
 
-Follow these simple steps to get LinkLanka running locally without any hassle. The backend runs entirely in Docker, which means all development environment variables are pre-configured for you out of the box.
+## Linux/macOS
 
----
+1. Install Bun, then verify tools.
 
-## 1. Prerequisites
+```bash
+curl -fsSL https://bun.sh/install | bash
+bun --version
+docker --version
+```
 
-Make sure you have installed:
-- [Node.js 22 LTS](https://nodejs.org/) & **pnpm** (`npm install -g pnpm@10.28.2`)
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Must be running before starting)
-- Android Studio / Xcode (If running the native mobile build)
+If `bun` is not found, open a new terminal and run `bun --version` again.
 
----
+1. From repo root, create env files.
 
-## 2. Start the Backend
+```bash
+cp .env.example .env
+cp apps/mobile/.env.example apps/mobile/.env
+```
 
-Open a terminal at the root of the project and run:
+1. Open backend env file.
+
+```bash
+nano .env
+```
+
+Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+
+1. Copy Firebase credentials (ask lead dev for the file).
+
+```bash
+cp /path/to/google-services.json apps/mobile/google-services.json
+cp /path/to/google-services.json apps/mobile/android/app/google-services.json
+```
+
+1. Start backend (API + Postgres).
 
 ```bash
 docker compose up --build -d
 ```
 
-This will automatically start PostgreSQL and the NestJS API. 
-> 📍 The API is now live at **http://localhost:3000**.
-> ♻️ **Hot Reload:** If you edit any code in `apps/api`, the container will automatically reload. You do not need to run `pnpm start:dev` locally!
-
----
-
-## 3. Install & Configure the Mobile App
-
-Install the app dependencies from the root directory:
+1. Install dependencies (separate installs).
 
 ```bash
-pnpm install
+cd apps/api && bun install
+cd ../mobile && bun install
 ```
 
-### Configure Environment
-
-Create an `.env` file inside `apps/mobile/` and paste the following:
-```env
-# If using an Android Emulator: use http://10.0.2.2:3000
-# If using a physical phone: use your machine's local IP (e.g. http://192.168.1.50:3000)
-# If using iOS simulator: use http://localhost:3000
-EXPO_PUBLIC_API_URL=http://localhost:3000
-```
-
-### Firebase Credentials
-
-Ask the lead developer for the `google-services.json` file. You must copy it to both of these locations before building:
-1. `apps/mobile/google-services.json`
-2. `apps/mobile/android/app/google-services.json`
-
----
-
-## 4. Run the Mobile App
-
-Navigate into the mobile folder and launch the app:
+1. Run mobile.
 
 ```bash
 cd apps/mobile
-pnpm android   # For Android
-# pnpm ios     # For iOS Simulator
+bun run android
+# bun run ios
 ```
 
-*The first build will take a few minutes as it compiles native Android/iOS code.*
+## Windows (PowerShell)
+
+1. Install Bun, then verify tools.
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+bun --version
+docker --version
+```
+
+If `bun` is not found, open a new PowerShell window and run `bun --version` again.
+
+1. From repo root, create env files.
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item apps/mobile/.env.example apps/mobile/.env
+```
+
+1. Open backend env file.
+
+```powershell
+notepad .env
+```
+
+Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+
+1. Copy Firebase credentials (ask lead dev for the file).
+
+```powershell
+Copy-Item "C:\path\to\google-services.json" "apps/mobile/google-services.json"
+Copy-Item "C:\path\to\google-services.json" "apps/mobile/android/app/google-services.json"
+```
+
+1. Start backend (API + Postgres).
+
+```powershell
+docker compose up --build -d
+```
+
+1. Install dependencies (separate installs).
+
+```powershell
+Set-Location apps/api
+bun install
+Set-Location ../mobile
+bun install
+```
+
+1. Run mobile.
+
+```powershell
+Set-Location apps/mobile
+bun run android
+# bun run ios
+```
+
+## Tiny Troubleshooting
+
+- Check running containers: `docker compose ps`
+- Android emulator API URL should be `http://10.0.2.2:3000` in `apps/mobile/.env`
+- If `apps/mobile/node_modules` is root-owned (Linux/macOS): `sudo chown -R $USER:$USER apps/mobile/node_modules`

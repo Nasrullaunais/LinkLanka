@@ -117,6 +117,21 @@ interface MessagesHiddenEvent {
   hiddenBy: string;
 }
 
+function shouldMarkTranslating(
+  isOwnMessage: boolean,
+  translations: HistoryMessage['translations'] | NewMessageEvent['translations'] | null | undefined,
+  confidenceScore: number | null | undefined,
+): boolean {
+  if (isOwnMessage) return false;
+  if (translations) return false;
+
+  // A persisted confidence score means Phase 2 has completed, even when
+  // there is no translation text (for example, inaudible audio).
+  if (typeof confidenceScore === 'number') return false;
+
+  return true;
+}
+
 // ── Server → Client broadcast for message edit ────────────────────────────────
 interface MessageEditedEvent {
   messageId: string;
@@ -192,7 +207,9 @@ function updateMessageById(
 }
 
 // ── Mappers ──────────────────────────────────────────────────────────────────
-function historyToChatMessage(msg: HistoryMessage): ChatMessage {
+function historyToChatMessage(msg: HistoryMessage, currentUserId: string | null): ChatMessage {
+  const isOwnMessage = currentUserId != null && msg.sender.id === currentUserId;
+
   return {
     id: msg.id,
     senderId: msg.sender.id,
@@ -206,13 +223,18 @@ function historyToChatMessage(msg: HistoryMessage): ChatMessage {
     extractedActions: msg.extractedActions ?? null,
     isOptimistic: false,
     isEdited: msg.isEdited ?? false,
-    // If the message has no translations yet, it's still being translated
-    isTranslating: !msg.translations,
+    isTranslating: shouldMarkTranslating(
+      isOwnMessage,
+      msg.translations,
+      msg.confidenceScore,
+    ),
     createdAt: msg.createdAt,
   };
 }
 
-function serverEventToChatMessage(evt: NewMessageEvent): ChatMessage {
+function serverEventToChatMessage(evt: NewMessageEvent, currentUserId: string | null): ChatMessage {
+  const isOwnMessage = currentUserId != null && evt.senderId === currentUserId;
+
   return {
     id: evt.messageId,
     senderId: evt.senderId,
@@ -226,8 +248,11 @@ function serverEventToChatMessage(evt: NewMessageEvent): ChatMessage {
     extractedActions: evt.extractedActions ?? null,
     isOptimistic: false,
     isEdited: false,
-    // Phase 1 messages arrive with translations: null — show AI translating indicator
-    isTranslating: !evt.translations,
+    isTranslating: shouldMarkTranslating(
+      isOwnMessage,
+      evt.translations,
+      evt.confidenceScore,
+    ),
     createdAt: new Date().toISOString(),
   };
 }
@@ -405,7 +430,7 @@ export function useChatMessages({
 
         if (!cancelled) {
           // Server returns DESC (newest first); reverse to ASC for list display
-          const mapped = data.map(historyToChatMessage).reverse();
+          const mapped = data.map((msg) => historyToChatMessage(msg, userId)).reverse();
           setMessages((prev) => (cached ? mergeMessagesById(prev, mapped) : mapped));
 
           if (mapped.length > 0) {
@@ -443,7 +468,7 @@ export function useChatMessages({
 
       if (data.length > 0) {
         // Server returns DESC (newest first); reverse to ASC before prepending
-        const older = data.map(historyToChatMessage).reverse();
+        const older = data.map((msg) => historyToChatMessage(msg, userId)).reverse();
         setMessages((prev) => [...older, ...prev]); // prepend — older items above current
 
         // Cursor advances to the oldest message in this batch (first after reverse = ASC)
@@ -473,7 +498,7 @@ export function useChatMessages({
 
     // ── newMessage (Phase 1 — raw message, possibly without translations) ──
     const handleNewMessage = (evt: NewMessageEvent) => {
-      const finalMessage = serverEventToChatMessage(evt);
+      const finalMessage = serverEventToChatMessage(evt, userId);
 
       enqueueMessagesPatch((ctx) => {
         // If the sender is the current user, reconcile the optimistic entry
@@ -676,7 +701,7 @@ export function useChatMessages({
         setMessages((prev) => {
           const existingIds = new Set(prev.map((m) => m.id));
           const missed = data
-            .map(historyToChatMessage)
+            .map((msg) => historyToChatMessage(msg, userId))
             .filter((m) => !existingIds.has(m.id));
           // Missed messages come from a DESC fetch, newest first — append them at end
           return missed.length > 0 ? [...prev, ...missed.reverse()] : prev;
@@ -685,7 +710,7 @@ export function useChatMessages({
         // Silent — reconnect catch-up is best-effort
       }
     })();
-  }, [isConnected, isLoadingHistory, groupId]);
+  }, [isConnected, isLoadingHistory, groupId, userId]);
 
   // ── 5. Sending logic ──────────────────────────────────────────────────────
   const handleSendMessage = useCallback(

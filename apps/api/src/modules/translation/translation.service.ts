@@ -76,13 +76,9 @@ export const TranslationSchema = z.object({
     tanglish: z.string(),
     english: z.string(),
   }),
-  detectedLanguage: z.enum([
-    'english',
-    'singlish',
-    'tanglish',
-    'mixed',
-    'unknown',
-  ]).default('unknown'),
+  detectedLanguage: z
+    .enum(['english', 'singlish', 'tanglish', 'mixed', 'unknown'])
+    .default('unknown'),
   originalTone: z.string().default('neutral'),
   confidenceScore: z.number().min(0).max(100),
   extractedActions: z
@@ -136,9 +132,13 @@ export class TranslationService {
   private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
   private readonly geminiApiKey: string;
   private readonly uploadsDir = join(process.cwd(), 'uploads');
+  private readonly ttsMaxConcurrency: number;
 
   constructor(private readonly configService: ConfigService) {
     this.geminiApiKey = this.configService.getOrThrow<string>('GEMINI_API_KEY');
+    this.ttsMaxConcurrency = this.resolveTtsMaxConcurrency(
+      this.configService.get<string>('TTS_MAX_CONCURRENCY'),
+    );
 
     this.model = new ChatGoogleGenerativeAI({
       apiKey: this.geminiApiKey,
@@ -177,7 +177,7 @@ LANGUAGE DETECTION RULES:
 - Return a single language only when one style is clearly dominant and other-language words are incidental.
 - If the language cannot be confidently identified, return "unknown".
 Calculate a confidence score (0-100). If the phrase is too ambiguous even with context, lower the score.
-CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitions if they appear in the text: ${payload.userDictionary}
+CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitionsRITICAL CONTEXT: The if they appear in the text: ${payload.userDictionary}
 Always use terms which commonly used and easily understood by users. dont use neche terms used by only a small group of people. If the input contains terms that are not commonly used, replace them with more common alternatives in the translations, but keep the original term in the transcription.
 
 ACTION EXTRACTION — In addition to translating, analyze the intent of the message.
@@ -285,34 +285,107 @@ Examples of messages WITHOUT actions:
     const targets = this.getTargetLanguages(params.detectedLanguage);
     if (targets.length === 0) return {};
 
+    const jobs = targets
+      .map((language) => ({
+        language,
+        text: params.translations[language]?.trim() ?? '',
+      }))
+      .filter((job) => job.text.length > 0);
+
+    if (jobs.length === 0) {
+      return {};
+    }
+
     await fs.promises.mkdir(this.uploadsDir, { recursive: true });
 
+    const startedAt = Date.now();
+    const concurrency = Math.min(this.ttsMaxConcurrency, jobs.length);
+
     const output: TranslatedAudioUrls = {};
-    for (const language of targets) {
-      const text = params.translations[language]?.trim();
-      if (!text) continue;
+    let successCount = 0;
+    let failureCount = 0;
+    let nextJobIndex = 0;
 
-      try {
-        const wavAudio = await this.generateSpeechWav({
-          transcript: text,
-          language,
-          tone: params.originalTone,
-        });
+    const runWorker = async (): Promise<void> => {
+      while (true) {
+        const index = nextJobIndex;
+        nextJobIndex += 1;
+        if (index >= jobs.length) return;
 
-        const fileName = `tts-${language}-${randomUUID()}.wav`;
-        await fs.promises.writeFile(join(this.uploadsDir, fileName), wavAudio);
-        output[language] = `${this.getBaseUrl()}/uploads/${fileName}`;
-      } catch (error) {
-        this.logger.warn(
-          `[generateTranslatedAudioFiles] Failed for ${language}: ${String(error)}`,
-        );
+        const job = jobs[index];
+        const itemStartedAt = Date.now();
+
+        try {
+          const wavAudio = await this.generateSpeechWav({
+            transcript: job.text,
+            language: job.language,
+            tone: params.originalTone,
+          });
+
+          const fileName = `tts-${job.language}-${randomUUID()}.wav`;
+          await fs.promises.writeFile(
+            join(this.uploadsDir, fileName),
+            wavAudio,
+          );
+          output[job.language] = `${this.getBaseUrl()}/uploads/${fileName}`;
+          successCount += 1;
+
+          this.logger.log(
+            `[generateTranslatedAudioFiles] Generated ${job.language} audio in ${Date.now() - itemStartedAt}ms`,
+          );
+        } catch (error) {
+          failureCount += 1;
+          this.logger.warn(
+            `[generateTranslatedAudioFiles] Failed for ${job.language} after ${Date.now() - itemStartedAt}ms: ${this.describeTtsError(error)}`,
+          );
+        }
       }
+    };
+
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => runWorker()),
+    );
+
+    this.logger.log(
+      `[generateTranslatedAudioFiles] Completed detectedLanguage=${params.detectedLanguage} targets=${jobs.length} successCount=${successCount} failureCount=${failureCount} concurrency=${concurrency} durationMs=${Date.now() - startedAt}`,
+    );
+
+    if (successCount === 0 && failureCount > 0) {
+      this.logger.warn(
+        '[generateTranslatedAudioFiles] No translated audio files were generated',
+      );
     }
 
     return output;
   }
 
-  private getTargetLanguages(detectedLanguage: DetectedLanguage): SupportedLanguage[] {
+  private resolveTtsMaxConcurrency(rawValue: string | undefined): number {
+    const parsed = Number.parseInt(rawValue ?? '', 10);
+    if (!Number.isFinite(parsed)) {
+      return 2;
+    }
+
+    return Math.min(3, Math.max(1, parsed));
+  }
+
+  private describeTtsError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes('timeout') || normalized.includes('aborted')) {
+      return `timeout: ${message}`;
+    }
+
+    if (normalized.includes('429') || normalized.includes('rate')) {
+      return `rate-limit: ${message}`;
+    }
+
+    return message;
+  }
+
+  private getTargetLanguages(
+    detectedLanguage: DetectedLanguage,
+  ): SupportedLanguage[] {
     switch (detectedLanguage) {
       case 'singlish':
         return ['english', 'tanglish'];
@@ -376,9 +449,11 @@ Examples of messages WITHOUT actions:
 
     for (const candidate of candidates) {
       const parts =
-        (candidate as {
-          content?: { parts?: Array<{ inlineData?: { data?: string } }> };
-        }).content?.parts ?? [];
+        (
+          candidate as {
+            content?: { parts?: Array<{ inlineData?: { data?: string } }> };
+          }
+        ).content?.parts ?? [];
 
       for (const part of parts) {
         const data = part.inlineData?.data;
@@ -409,7 +484,7 @@ Examples of messages WITHOUT actions:
       '',
       '## THE SCENE: A friendly chat voice note played inside a messaging app.',
       '',
-      '### DIRECTOR\'S NOTES',
+      "### DIRECTOR'S NOTES",
       `Style: ${params.tone || 'neutral'}`,
       'Pacing: Natural conversational pacing with clear diction.',
       `Accent: ${accentHint}`,

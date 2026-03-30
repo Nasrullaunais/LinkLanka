@@ -87,6 +87,12 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
         playsInSilentMode: true,
       });
 
+      const switchingMessage = activeMessageId.value !== null && activeMessageId.value !== messageId;
+      if (switchingMessage && statusRef.current.playing) {
+        // Ensure only one recording can ever play at a time when users tap rapidly.
+        playerRef.current.pause();
+      }
+
       activeMessageId.value = messageId;
 
       if (uri !== activeUriRef.current) {
@@ -96,7 +102,9 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
         // The auto-play effect below starts playback once it loads.
       } else {
         const s = statusRef.current;
-        if (s.duration > 0 && s.currentTime >= s.duration - 0.1) {
+        if (switchingMessage) {
+          await playerRef.current.seekTo(0);
+        } else if (s.duration > 0 && s.currentTime >= s.duration - 0.1) {
           await playerRef.current.seekTo(0);
         }
         playerRef.current.play();

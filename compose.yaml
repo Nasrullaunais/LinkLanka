@@ -2,12 +2,41 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: linklanka_admin
-      POSTGRES_PASSWORD: itpse55
-      POSTGRES_DB: linklanka_db
+      POSTGRES_USER: ${DB_USER:-linklanka_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME:-linklanka_db}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      TTS_MAX_CONCURRENCY: ${TTS_MAX_CONCURRENCY:-2}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-linklanka_admin}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-linklanka_db}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SYNCHRONIZE: ${DB_SYNCHRONIZE:-true}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - api_uploads:/app/apps/api/uploads
+    depends_on:
+      - postgres
+
 volumes:
   pgdata:
+  api_uploads:

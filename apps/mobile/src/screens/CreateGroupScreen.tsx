@@ -15,8 +15,10 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { searchUsers, createGroup, type UserItem } from '../services/api';
 import type { AppStackParamList } from '../navigation/types';
 import { useTheme } from '../contexts/ThemeContext';
+import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'CreateGroup'>;
+const MIN_GROUP_NAME_LENGTH = 2;
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function CreateGroupScreen({ navigation }: Props) {
@@ -25,11 +27,12 @@ export default function CreateGroupScreen({ navigation }: Props) {
 
   const [groupName, setGroupName] = useState('');
   const [memberSearch, setMemberSearch] = useState('');
-  const [searchResults, setSearchResults] = useState<UserItem[]>([]);;
+  const [searchResults, setSearchResults] = useState<UserItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<UserItem[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState('');
+  const [searchError, setSearchError] = useState('');
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -41,10 +44,12 @@ export default function CreateGroupScreen({ navigation }: Props) {
     if (!query) {
       setSearchResults([]);
       setIsSearching(false);
+      setSearchError('');
       return;
     }
 
     setIsSearching(true);
+    setSearchError('');
     debounceRef.current = setTimeout(async () => {
       try {
         const results = await searchUsers(query);
@@ -52,6 +57,9 @@ export default function CreateGroupScreen({ navigation }: Props) {
         setSearchResults(results.filter((r) => !selectedUsers.some((s) => s.id === r.id)));
       } catch (err) {
         console.error('[CreateGroupScreen] Search failed:', err);
+        setSearchError(
+          getApiErrorMessage(err, 'Could not search users right now. Please try again.'),
+        );
       } finally {
         setIsSearching(false);
       }
@@ -81,6 +89,10 @@ export default function CreateGroupScreen({ navigation }: Props) {
       setError('Please enter a group name.');
       return;
     }
+    if (name.length < MIN_GROUP_NAME_LENGTH) {
+      setError(`Group name must be at least ${MIN_GROUP_NAME_LENGTH} characters.`);
+      return;
+    }
 
     setError('');
     setIsCreating(true);
@@ -97,7 +109,7 @@ export default function CreateGroupScreen({ navigation }: Props) {
       });
     } catch (err) {
       console.error('[CreateGroupScreen] Create failed:', err);
-      setError('Failed to create group. Please try again.');
+      setError(getApiErrorMessage(err, 'Failed to create group. Please try again.'));
     } finally {
       setIsCreating(false);
     }
@@ -179,11 +191,16 @@ export default function CreateGroupScreen({ navigation }: Props) {
           placeholder="Search users…"
           placeholderTextColor={colors.inputPlaceholder}
           value={memberSearch}
-          onChangeText={setMemberSearch}
+          onChangeText={(value) => {
+            setMemberSearch(value);
+            if (searchError) setSearchError('');
+          }}
           autoCapitalize="none"
         />
         {isSearching && <ActivityIndicator size="small" color={colors.primary} />}
       </View>
+
+      {searchError ? <Text style={[styles.errorText, { color: colors.destructive }]}>{searchError}</Text> : null}
 
       {/* No-results hint */}
       {isSearchActive && searchResults.length === 0 && !isSearching && (
@@ -195,7 +212,18 @@ export default function CreateGroupScreen({ navigation }: Props) {
         <View style={[styles.resultsListTop, { borderColor: colors.border }]} />
       )}
     </View>
-  ), [error, colors, groupName, selectedUsers, memberSearch, isSearching, isSearchActive, searchResults.length, toggleUser]);
+  ), [
+    error,
+    searchError,
+    colors,
+    groupName,
+    selectedUsers,
+    memberSearch,
+    isSearching,
+    isSearchActive,
+    searchResults.length,
+    toggleUser,
+  ]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -207,11 +235,12 @@ export default function CreateGroupScreen({ navigation }: Props) {
         <Text style={[styles.headerTitle, { color: colors.headerText }]}>Create Group</Text>
         <Pressable
           onPress={handleCreate}
-          disabled={isCreating || !groupName.trim()}
+          disabled={isCreating || groupName.trim().length < MIN_GROUP_NAME_LENGTH}
           style={({ pressed }) => [
             styles.createBtn,
             { backgroundColor: colors.headerAvatarBg },
-            (isCreating || !groupName.trim()) && styles.createBtnDisabled,
+            (isCreating || groupName.trim().length < MIN_GROUP_NAME_LENGTH) &&
+              styles.createBtnDisabled,
             pressed && styles.createBtnPressed,
           ]}
         >

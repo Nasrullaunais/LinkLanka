@@ -3,10 +3,12 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
+  FadeInUp,
   useAnimatedStyle,
   useSharedValue,
   useDerivedValue,
@@ -66,6 +68,7 @@ export interface ChatMessage {
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  enterDelayMs?: number;
   currentUserId: string;
   onRetry?: (messageId: string) => void;
   /** Called when the user long-presses the message — triggers selection mode */
@@ -236,12 +239,14 @@ const AudioPlayer = memo(function AudioPlayer({
   sentAt,
   messageId,
   initialDurationMs = 0,
+  width,
 }: {
   uri: string;
   isOwn: boolean;
   sentAt?: string;
   messageId: string;
   initialDurationMs?: number;
+  width: number;
 }) {
   const { colors } = useTheme();
   const normalizedUri = normalizeAudioUri(uri);
@@ -339,7 +344,7 @@ const AudioPlayer = memo(function AudioPlayer({
   );
 
   return (
-    <View style={styles.audioWrapper}>
+    <View style={[styles.audioWrapper, { width }]}>
       {/* ── Top row: play button + waveform ── */}
       <View style={styles.audioTopRow}>
         <Pressable
@@ -473,6 +478,7 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
   const playbackId = `${messageId}:translated:${entry.language}`;
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const expandedProgress = useSharedValue(0);
 
   useAnimatedReaction(
     () => audioCtx.activeMessageId.value === playbackId && audioCtx.isPlayingSV.value,
@@ -482,6 +488,22 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
       }
     }
   );
+
+  useEffect(() => {
+    expandedProgress.value = withTiming(isPlaying ? 1 : 0, {
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [isPlaying, expandedProgress]);
+
+  const shellStyle = useAnimatedStyle(() => ({
+    width: 28 + expandedProgress.value * 88,
+  }));
+
+  const labelWrapStyle = useAnimatedStyle(() => ({
+    width: expandedProgress.value * 56,
+    opacity: 0.35 + expandedProgress.value * 0.65,
+  }));
 
   const fillStyle = useAnimatedStyle(() => {
     if (audioCtx.activeMessageId.value !== playbackId) return { width: '0%' };
@@ -494,23 +516,27 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
   }, [audioCtx, playbackId, entry.url]);
 
   return (
-    <Pressable
-      onPress={handlePress}
-      hitSlop={8}
-      style={({ pressed }) => [
-        styles.translatedAudioBtn,
-        { backgroundColor: colors.confidenceBg, overflow: 'hidden' },
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      <Animated.View
-        style={[styles.translatedAudioBtnFill, { backgroundColor: colors.primaryFaded }, fillStyle]}
-      />
-      <Ionicons name={isPlaying ? 'pause' : 'play'} size={12} color={colors.primaryLight} />
-      <Text style={[styles.translatedAudioText, { color: colors.primaryLight }]}>
-        {entry.label}
-      </Text>
-    </Pressable>
+    <Animated.View style={[styles.translatedAudioBtnShell, shellStyle]}>
+      <Pressable
+        onPress={handlePress}
+        hitSlop={8}
+        style={({ pressed }) => [
+          styles.translatedAudioBtn,
+          { backgroundColor: colors.confidenceBg, overflow: 'hidden' },
+          pressed && { opacity: 0.7 },
+        ]}
+      >
+        <Animated.View
+          style={[styles.translatedAudioBtnFill, { backgroundColor: colors.primaryFaded }, fillStyle]}
+        />
+        <Ionicons name={isPlaying ? 'pause' : 'play'} size={12} color={colors.primaryLight} />
+        <Animated.View style={[styles.translatedAudioLabelWrap, labelWrapStyle]}>
+          <Text numberOfLines={1} style={[styles.translatedAudioText, { color: colors.primaryLight }]}> 
+            {entry.label}
+          </Text>
+        </Animated.View>
+      </Pressable>
+    </Animated.View>
   );
 });
 
@@ -548,7 +574,6 @@ const TranslationSection = memo(function TranslationSection({
   onRetry,
 }: TranslationSectionProps) {
   const { colors } = useTheme();
-  const audioCtx = useChatAudioPlayer();
 
   const translationCacheKey = `${messageId}:${preferredLanguage}`;
   const cachedLayout = translationLayoutCache.get(translationCacheKey);
@@ -586,13 +611,6 @@ const TranslationSection = memo(function TranslationSection({
       },
     ];
   }, [contentType, isOwn, preferredLanguage, translatedAudioUrls]);
-
-  const handleTranslatedAudioPress = useCallback(
-    (language: 'english' | 'singlish' | 'tanglish', url: string) => {
-      audioCtx.toggle(`${messageId}:translated:${language}`, normalizeAudioUri(url));
-    },
-    [audioCtx, messageId],
-  );
 
   // ── Branching renders ─────────────────────────────────────────────────
   if (isOwn) return null;
@@ -692,16 +710,18 @@ const TranslationSection = memo(function TranslationSection({
           </View>
         )}
 
-        {score != null && (
-          <View style={[styles.confidenceBadge, { backgroundColor: colors.confidenceBg }]}>
-            <Text style={[styles.confidenceText, { color: colors.confidenceText }]}>⚡ {score}%</Text>
-          </View>
-        )}
-        {onRetry && (
-          <Pressable onPress={() => onRetry(messageId)} hitSlop={8} style={styles.retryBtn}>
-            <Ionicons name="refresh" size={14} color={colors.primaryLight} />
-          </Pressable>
-        )}
+        <View style={styles.translationMetaRow}>
+          {score != null && (
+            <View style={[styles.confidenceBadge, { backgroundColor: colors.confidenceBg }]}> 
+              <Text style={[styles.confidenceText, { color: colors.confidenceText }]}>⚡ {score}%</Text>
+            </View>
+          )}
+          {onRetry && (
+            <Pressable onPress={() => onRetry(messageId)} hitSlop={8} style={styles.retryBtn}>
+              <Ionicons name="refresh" size={14} color={colors.primaryLight} />
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   );
@@ -710,6 +730,7 @@ const TranslationSection = memo(function TranslationSection({
 // ── Main Component ───────────────────────────────────────────────────────────
 function MessageBubble({
   message,
+  enterDelayMs = 0,
   currentUserId,
   onRetry,
   onLongPress,
@@ -717,6 +738,7 @@ function MessageBubble({
   onOpenDocumentInterrogation,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
+  const { width: screenWidth } = useWindowDimensions();
   const {
     selectionMode,
     selectionModeProgress,
@@ -728,8 +750,20 @@ function MessageBubble({
   const isOwn = message.senderId === currentUserId;
   const { contentType, rawContent, translations, confidenceScore, isOptimistic, isRetrying } = message;
 
+  // Cap bubble width on large screens so messages do not become overly wide.
+  const rowMaxWidth = useMemo(
+    () => Math.min(Math.round(screenWidth * 0.78), 620),
+    [screenWidth],
+  );
+
+  // Keep voice-note bubbles compact on large screens while preserving legibility on phones.
+  const audioBubbleWidth = useMemo(
+    () => Math.max(220, Math.min(Math.round(rowMaxWidth * 0.68), 420)),
+    [rowMaxWidth],
+  );
+
   const showMediating =
-    isOptimistic === true || isRetrying === true || message.isTranslating === true;
+    !isOwn && (isOptimistic === true || isRetrying === true || message.isTranslating === true);
 
   // ── Highlight animation (from search navigation) ────────────────────────
   // Driven entirely on the UI thread via useAnimatedReaction — changing
@@ -810,28 +844,13 @@ function MessageBubble({
     opacity: isSelectedSV.value === 1 ? 1 : 0,
   }));
 
-  // ── Optimistic pulse — only allocate animation for optimistic messages ──
-  const optimisticOpacity = useSharedValue(isOptimistic ? 0.7 : 1);
-  useEffect(() => {
-    if (isOptimistic) {
-      optimisticOpacity.value = withRepeat(
-        withSequence(
-          withTiming(0.85, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-          withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-        ),
-        -1,
-        false,
-      );
-    } else {
-      optimisticOpacity.value = 1;
-    }
-  }, [isOptimistic, optimisticOpacity]);
-
-  // Overwrite the optimistic style only when actually optimistic
-  const optimisticPulseStyle = useAnimatedStyle(() => {
-    if (!isOptimistic) return {};
-    return { opacity: optimisticOpacity.value };
-  });
+  const enterTransition = useMemo(() => {
+    if (enterDelayMs <= 0) return undefined;
+    return FadeInUp
+      .delay(enterDelayMs)
+      .duration(240)
+      .easing(Easing.out(Easing.cubic));
+  }, [enterDelayMs]);
 
   // ── Content (memoized to avoid re-creating JSX on unrelated state changes) ─
   const content = useMemo(() => {
@@ -872,13 +891,27 @@ function MessageBubble({
           !message.isTranslating &&
           !message.isOptimistic;
 
+        const inaudibleBadgeBackground = isOwn
+          ? 'rgba(255,255,255,0.2)'
+          : colors.primaryFaded;
+        const inaudibleBadgeForeground = isOwn
+          ? 'rgba(255,255,255,0.85)'
+          : colors.audioTimeReceived;
+
         return (
           <View>
-            <AudioPlayer uri={uri} isOwn={isOwn} sentAt={message.createdAt} messageId={message.id} initialDurationMs={durationMs} />
+            <AudioPlayer
+              uri={uri}
+              isOwn={isOwn}
+              sentAt={message.createdAt}
+              messageId={message.id}
+              initialDurationMs={durationMs}
+              width={audioBubbleWidth}
+            />
             {isInaudible && (
-              <View style={[styles.inaudibleBadge, { backgroundColor: isOwn ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.05)' }]}>
-                <Ionicons name="volume-mute-outline" size={14} color={isOwn ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.4)'} style={{ marginRight: 4 }} />
-                <Text style={[styles.inaudibleText, { color: isOwn ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.4)' }]}>
+              <View style={[styles.inaudibleBadge, { backgroundColor: inaudibleBadgeBackground }]}> 
+                <Ionicons name="volume-mute-outline" size={14} color={inaudibleBadgeForeground} style={{ marginRight: 4 }} />
+                <Text style={[styles.inaudibleText, { color: inaudibleBadgeForeground }]}> 
                   Inaudible
                 </Text>
               </View>
@@ -905,7 +938,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, colors.bubbleOwnText, colors.bubbleReceivedText, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -927,7 +960,7 @@ function MessageBubble({
       onPress={handleTap}
       delayLongPress={300}
     >
-      <Animated.View style={[styles.rowWrapper, animatedRowWrapperStyle]}>
+      <Animated.View entering={enterTransition} style={[styles.rowWrapper, animatedRowWrapperStyle]}>
         {/* Highlight overlay — absolutely positioned, cheap opacity-only anim */}
         <Animated.View style={[StyleSheet.absoluteFill, styles.highlightOverlay, highlightStyle]} />
 
@@ -947,8 +980,8 @@ function MessageBubble({
           </Animated.View>
         </Animated.View>
 
-        <Animated.View style={[styles.row, isOwn ? styles.rowOwn : styles.rowOther, animatedBubbleSlide]}>
-          <View style={styles.bubbleColumn}>
+        <Animated.View style={[styles.row, { maxWidth: rowMaxWidth }, isOwn ? styles.rowOwn : styles.rowOther, animatedBubbleSlide]}>
+          <View style={[styles.bubbleColumn, isOwn ? styles.bubbleColumnOwn : styles.bubbleColumnOther]}>
             {showMediating && !isOwn && contentType !== 'IMAGE' && contentType !== 'DOCUMENT' ? (
               <Animated.View
                 style={[
@@ -977,7 +1010,6 @@ function MessageBubble({
                     shadowColor: colors.bubbleShadow,
                   },
                   isOwn ? styles.bubbleOwn : styles.bubbleOther,
-                  isOptimistic ? optimisticPulseStyle : undefined,
                 ]}
               >
                 {content}
@@ -1039,6 +1071,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     pm.detectedLanguage === nm.detectedLanguage &&
     pm.originalTone === nm.originalTone &&
     pm.extractedActions === nm.extractedActions &&
+    prev.enterDelayMs === next.enterDelayMs &&
     prev.currentUserId === next.currentUserId &&
     prev.onRetry === next.onRetry &&
     prev.onLongPress === next.onLongPress &&
@@ -1050,8 +1083,6 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
 export default memo(MessageBubble, arePropsEqual);
 
 // ── Styles ───────────────────────────────────────────────────────────────────
-const BUBBLE_MAX_WIDTH = '78%' as const;
-
 const styles = StyleSheet.create({
   // Animated wrapper for selection background
   rowWrapper: {
@@ -1069,7 +1100,6 @@ const styles = StyleSheet.create({
   // Row alignment
   row: {
     marginVertical: 2,
-    maxWidth: BUBBLE_MAX_WIDTH,
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 6,
@@ -1110,6 +1140,12 @@ const styles = StyleSheet.create({
   // Bubble column (bubble + edited label)
   bubbleColumn: {
     flexShrink: 1,
+  },
+  bubbleColumnOwn: {
+    alignItems: 'flex-end',
+  },
+  bubbleColumnOther: {
+    alignItems: 'flex-start',
   },
 
   // Bubble
@@ -1282,8 +1318,14 @@ const styles = StyleSheet.create({
   translationFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
     marginTop: 4,
+    gap: 6,
+  },
+  translationMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 'auto',
     gap: 6,
   },
   confidenceBadge: {
@@ -1301,15 +1343,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     flexWrap: 'wrap',
+    alignSelf: 'flex-start',
+  },
+  translatedAudioBtnShell: {
+    height: 24,
   },
   translatedAudioBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 0,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 10,
     overflow: 'hidden',
+    height: 24,
   },
   translatedAudioBtnFill: {
     position: 'absolute',
@@ -1317,6 +1364,10 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     borderRadius: 10,
+  },
+  translatedAudioLabelWrap: {
+    overflow: 'hidden',
+    marginLeft: 4,
   },
   translatedAudioText: {
     fontSize: 11,

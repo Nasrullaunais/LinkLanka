@@ -20,8 +20,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { updateProfile, uploadProfilePicture } from '../services/api';
 import type { AppStackParamList } from '../navigation/types';
+import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'Profile'>;
+const MIN_DISPLAY_NAME_LENGTH = 2;
 
 const DIALECTS = [
   { key: 'singlish', label: 'Singlish' },
@@ -39,6 +41,7 @@ export default function ProfileScreen({ navigation }: Props) {
   const [dialect, setDialect] = useState(userDialect ?? 'english');
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPic, setIsUploadingPic] = useState(false);
+  const [formError, setFormError] = useState('');
 
   // ── Profile picture upload flow ──────────────────────────────────────────
   const handlePickImage = useCallback(async () => {
@@ -70,7 +73,10 @@ export default function ProfileScreen({ navigation }: Props) {
       await refreshProfile();
     } catch (err) {
       console.error('[ProfileScreen] Profile picture upload failed:', err);
-      Alert.alert('Upload failed', 'Could not upload profile picture. Please try again.');
+      Alert.alert(
+        'Upload failed',
+        getApiErrorMessage(err, 'Could not upload profile picture. Please try again.'),
+      );
     } finally {
       setIsUploadingPic(false);
     }
@@ -80,10 +86,23 @@ export default function ProfileScreen({ navigation }: Props) {
   const handleSave = useCallback(async () => {
     const name = displayName.trim();
     if (!name) {
-      Alert.alert('Invalid name', 'Display name cannot be empty.');
+      setFormError('Display name cannot be empty.');
+      return;
+    }
+    if (name.length < MIN_DISPLAY_NAME_LENGTH) {
+      setFormError(
+        `Display name must be at least ${MIN_DISPLAY_NAME_LENGTH} characters long.`,
+      );
       return;
     }
 
+    const hasValidDialect = DIALECTS.some((item) => item.key === dialect);
+    if (!hasValidDialect) {
+      setFormError('Please select a valid dialect.');
+      return;
+    }
+
+    setFormError('');
     setIsSaving(true);
     try {
       await updateProfile({ displayName: name, nativeDialect: dialect });
@@ -91,7 +110,9 @@ export default function ProfileScreen({ navigation }: Props) {
       navigation.goBack();
     } catch (err) {
       console.error('[ProfileScreen] Profile save failed:', err);
-      Alert.alert('Save failed', 'Could not save your profile. Please try again.');
+      const message = getApiErrorMessage(err, 'Could not save your profile. Please try again.');
+      setFormError(message);
+      Alert.alert('Save failed', message);
     } finally {
       setIsSaving(false);
     }
@@ -133,7 +154,10 @@ export default function ProfileScreen({ navigation }: Props) {
         <TextInput
           style={[styles.input, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.inputBg }]}
           value={displayName}
-          onChangeText={setDisplayName}
+          onChangeText={(value) => {
+            setDisplayName(value);
+            if (formError) setFormError('');
+          }}
           placeholder="Your display name"
           placeholderTextColor={colors.inputPlaceholder}
           autoCapitalize="words"
@@ -146,7 +170,10 @@ export default function ProfileScreen({ navigation }: Props) {
           {DIALECTS.map((d) => (
             <Pressable
               key={d.key}
-              onPress={() => setDialect(d.key)}
+              onPress={() => {
+                setDialect(d.key);
+                if (formError) setFormError('');
+              }}
               style={[
                 styles.dialectChip,
                 { borderColor: colors.border, backgroundColor: colors.surface },
@@ -183,6 +210,8 @@ export default function ProfileScreen({ navigation }: Props) {
         <Text style={[styles.dictionaryHint, { color: colors.textTertiary }]}>
           Add custom words or slang to improve your translation accuracy.
         </Text>
+
+        {formError ? <Text style={[styles.errorText, { color: colors.destructive }]}>{formError}</Text> : null}
 
         {/* Save button */}
         <Pressable
@@ -268,6 +297,11 @@ const styles = StyleSheet.create({
   dictionaryRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   dictionaryRowText: { fontSize: 15, fontWeight: '600' },
   dictionaryHint: { fontSize: 12, alignSelf: 'flex-start', marginBottom: 32 },
+  errorText: {
+    width: '100%',
+    fontSize: 13,
+    marginBottom: 12,
+  },
   saveBtn: {
     width: '100%',
     paddingVertical: 14,

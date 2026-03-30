@@ -17,8 +17,11 @@ import apiClient from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import type { AuthStackParamList } from '../navigation/types';
+import { getApiErrorMessage, isValidEmail, normalizeEmail } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Register'>;
+const MIN_PASSWORD_LENGTH = 8;
+const MIN_DISPLAY_NAME_LENGTH = 2;
 
 export default function RegisterScreen({ navigation }: Props) {
   const { login } = useAuth();
@@ -31,9 +34,41 @@ export default function RegisterScreen({ navigation }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleRegister() {
-    if (!displayName || !email || !password) {
+    const normalizedDisplayName = displayName.trim();
+    const normalizedEmail = normalizeEmail(email);
+
+    if (!normalizedDisplayName || !normalizedEmail || !password) {
       Alert.alert('Validation', 'Please fill in all required fields.');
       return;
+    }
+
+    if (normalizedDisplayName.length < MIN_DISPLAY_NAME_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Display name must be at least ${MIN_DISPLAY_NAME_LENGTH} characters.`,
+      );
+      return;
+    }
+
+    if (!isValidEmail(normalizedEmail)) {
+      Alert.alert('Validation', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
+      );
+      return;
+    }
+
+    if (normalizedEmail !== email) {
+      setEmail(normalizedEmail);
+    }
+
+    if (normalizedDisplayName !== displayName) {
+      setDisplayName(normalizedDisplayName);
     }
 
     setIsSubmitting(true);
@@ -41,32 +76,42 @@ export default function RegisterScreen({ navigation }: Props) {
     try {
       // 1. Register the account
       await apiClient.post('/auth/register', {
-        email,
+        email: normalizedEmail,
         password,
-        display_name: displayName,
+        display_name: normalizedDisplayName,
         native_dialect: nativeDialect,
       });
 
       // 2. Immediately log in so the user doesn't have to re-enter credentials
-      const { data } = await apiClient.post('/auth/login', { email, password });
+      const { data } = await apiClient.post('/auth/login', {
+        email: normalizedEmail,
+        password,
+      });
       const { access_token } = data as { access_token: string };
 
       await login(access_token);
       // AuthProvider will update userToken → AppGate renders the main app
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as {
+        message?: string;
+        code?: string;
+        response?: {
+          status?: number;
+          data?: unknown;
+        };
+      };
       console.error('[RegisterScreen] error:', {
-        message: error?.message,
-        code: error?.code,
-        data: error?.response?.data,
+        message: err?.message,
+        code: err?.code,
+        data: err?.response?.data,
       });
 
-      const message =
-        error?.response?.data?.message ??
-        (error?.message
-          ? `Network error: ${error.message}`
-          : 'Something went wrong.');
+      const message = getApiErrorMessage(
+        error,
+        'Unable to register right now. Please try again.',
+      );
 
-      Alert.alert('Registration Failed', Array.isArray(message) ? message.join('\n') : message);
+      Alert.alert('Registration Failed', message);
     } finally {
       setIsSubmitting(false);
     }
