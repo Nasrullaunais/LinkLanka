@@ -26,6 +26,7 @@ nano .env
 ```
 
 Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+Optional translation tuning: set `GEMINI_TRANSLATION_MODEL`, `GEMINI_TRANSLATION_FALLBACK_MODEL`, `TRANSLATION_MODEL_MAX_RETRIES`, and `TRANSLATION_TIMEOUT_MS`.
 
 1. Copy Firebase credentials (ask lead dev for the file).
 
@@ -81,6 +82,7 @@ notepad .env
 ```
 
 Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+Optional translation tuning: set `GEMINI_TRANSLATION_MODEL`, `GEMINI_TRANSLATION_FALLBACK_MODEL`, `TRANSLATION_MODEL_MAX_RETRIES`, and `TRANSLATION_TIMEOUT_MS`.
 
 1. Copy Firebase credentials (ask lead dev for the file).
 

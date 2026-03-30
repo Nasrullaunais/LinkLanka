@@ -129,6 +129,11 @@ interface TranslateIntentPayload {
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
   private readonly model: ChatGoogleGenerativeAI;
+  private readonly fallbackModel: ChatGoogleGenerativeAI | null;
+  private readonly primaryModelName: string;
+  private readonly fallbackModelName: string | null;
+  private readonly translationTimeoutMs: number;
+  private readonly translationModelMaxRetries: number;
   private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
   private readonly geminiApiKey: string;
   private readonly uploadsDir = join(process.cwd(), 'uploads');
@@ -139,11 +144,32 @@ export class TranslationService {
     this.ttsMaxConcurrency = this.resolveTtsMaxConcurrency(
       this.configService.get<string>('TTS_MAX_CONCURRENCY'),
     );
+    this.translationTimeoutMs = this.resolveTranslationTimeoutMs(
+      this.configService.get<string>('TRANSLATION_TIMEOUT_MS'),
+    );
+    this.translationModelMaxRetries = this.resolveTranslationModelMaxRetries(
+      this.configService.get<string>('TRANSLATION_MODEL_MAX_RETRIES'),
+    );
 
-    this.model = new ChatGoogleGenerativeAI({
-      apiKey: this.geminiApiKey,
-      model: 'gemini-3-flash-preview',
-    });
+    this.primaryModelName = this.resolveTranslationModelName(
+      this.configService.get<string>('GEMINI_TRANSLATION_MODEL'),
+      'gemini-3-flash-preview',
+    );
+
+    const fallbackModelName = this.resolveTranslationModelName(
+      this.configService.get<string>('GEMINI_TRANSLATION_FALLBACK_MODEL'),
+      '',
+    );
+    this.fallbackModelName = fallbackModelName || null;
+
+    this.model = this.createTranslationModel(this.primaryModelName);
+    this.fallbackModel = this.fallbackModelName
+      ? this.createTranslationModel(this.fallbackModelName)
+      : null;
+
+    this.logger.log(
+      `[TranslationService] primaryModel=${this.primaryModelName} fallbackModel=${this.fallbackModelName ?? 'none'} timeoutMs=${this.translationTimeoutMs} modelMaxRetries=${this.translationModelMaxRetries}`,
+    );
   }
 
   async translateIntent(
@@ -151,8 +177,6 @@ export class TranslationService {
   ): Promise<TranslationResult> {
     const { chatHistory } = payload;
     const sriLankaNow = getIsoLikeInTimezone(new Date(), EVENT_TIMEZONE);
-
-    const structuredModel = this.model.withStructuredOutput(TranslationSchema);
 
     const historyMessages: Array<HumanMessage | AIMessage> = chatHistory.map(
       (turn: ChatTurn) =>
@@ -264,17 +288,130 @@ Examples of messages WITHOUT actions:
       finalHumanMessage = new HumanMessage(payload.rawText ?? '');
     }
 
-    const result = await structuredModel.invoke([
-      systemMessage,
-      ...historyMessages,
-      finalHumanMessage,
-    ]);
+    const messages = [systemMessage, ...historyMessages, finalHumanMessage];
+    const modelCandidates: Array<{
+      modelName: string;
+      model: ChatGoogleGenerativeAI;
+    }> = [{ modelName: this.primaryModelName, model: this.model }];
 
-    return {
-      ...result,
-      detectedLanguage: result.detectedLanguage ?? 'unknown',
-      originalTone: result.originalTone ?? 'neutral',
-    };
+    if (this.fallbackModel && this.fallbackModelName) {
+      modelCandidates.push({
+        modelName: this.fallbackModelName,
+        model: this.fallbackModel,
+      });
+    }
+
+    const inputType = this.getInputType(payload);
+    let lastError: unknown;
+
+    for (let idx = 0; idx < modelCandidates.length; idx += 1) {
+      const candidate = modelCandidates[idx];
+      const startedAt = Date.now();
+
+      try {
+        const structuredModel =
+          candidate.model.withStructuredOutput(TranslationSchema);
+        const result = await structuredModel.invoke(messages, {
+          signal: AbortSignal.timeout(this.translationTimeoutMs),
+        });
+
+        this.logger.log(
+          `[translateIntent] success model=${candidate.modelName} inputType=${inputType} durationMs=${Date.now() - startedAt}`,
+        );
+
+        return {
+          ...result,
+          detectedLanguage: result.detectedLanguage ?? 'unknown',
+          originalTone: result.originalTone ?? 'neutral',
+        };
+      } catch (error) {
+        lastError = error;
+        const retryWithFallback =
+          idx < modelCandidates.length - 1 && this.isCapacityError(error);
+
+        this.logger.warn(
+          `[translateIntent] failed model=${candidate.modelName} inputType=${inputType} durationMs=${Date.now() - startedAt} retryWithFallback=${retryWithFallback} error=${this.describeProviderError(error)}`,
+        );
+
+        if (!retryWithFallback) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private createTranslationModel(modelName: string): ChatGoogleGenerativeAI {
+    return new ChatGoogleGenerativeAI({
+      apiKey: this.geminiApiKey,
+      model: modelName,
+      maxRetries: this.translationModelMaxRetries,
+    });
+  }
+
+  private resolveTranslationModelName(
+    rawValue: string | undefined,
+    defaultValue: string,
+  ): string {
+    const normalized = (rawValue ?? '').trim();
+    return normalized || defaultValue;
+  }
+
+  private resolveTranslationTimeoutMs(rawValue: string | undefined): number {
+    const parsed = Number.parseInt(rawValue ?? '', 10);
+    if (!Number.isFinite(parsed)) {
+      return 20_000;
+    }
+
+    return Math.min(45_000, Math.max(5_000, parsed));
+  }
+
+  private resolveTranslationModelMaxRetries(
+    rawValue: string | undefined,
+  ): number {
+    const parsed = Number.parseInt(rawValue ?? '', 10);
+    if (!Number.isFinite(parsed)) {
+      return 1;
+    }
+
+    return Math.min(2, Math.max(0, parsed));
+  }
+
+  private getInputType(
+    payload: TranslateIntentPayload,
+  ): 'text' | 'audio' | 'media' {
+    if (payload.localFilePath) {
+      return 'media';
+    }
+
+    if (payload.audioBase64) {
+      return 'audio';
+    }
+
+    return 'text';
+  }
+
+  private isCapacityError(error: unknown): boolean {
+    const message = this.describeProviderError(error).toLowerCase();
+
+    return (
+      message.includes('503') ||
+      message.includes('service unavailable') ||
+      message.includes('resource_exhausted') ||
+      message.includes('high demand') ||
+      message.includes('429') ||
+      message.includes('rate limit') ||
+      message.includes('overloaded')
+    );
+  }
+
+  private describeProviderError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    return String(error);
   }
 
   async generateTranslatedAudioFiles(params: {

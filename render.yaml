@@ -15,6 +15,14 @@ services:
         value: "3000"
       - key: BASE_URL
         value: https://linklanka-api-demo.onrender.com
+      - key: GEMINI_TRANSLATION_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_TRANSLATION_FALLBACK_MODEL
+        value: ""
+      - key: TRANSLATION_MODEL_MAX_RETRIES
+        value: "1"
+      - key: TRANSLATION_TIMEOUT_MS
+        value: "20000"
       - key: JWT_SECRET
         generateValue: true
       - key: GEMINI_API_KEY
