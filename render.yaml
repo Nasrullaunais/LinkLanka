@@ -21,8 +21,10 @@ services:
         value: ""
       - key: TRANSLATION_MODEL_MAX_RETRIES
         value: "1"
-      - key: TRANSLATION_TIMEOUT_MS
+      - key: TRANSLATION_TIMEOUT_MS_TEXT
         value: "20000"
+      - key: TRANSLATION_TIMEOUT_MS_MEDIA
+        value: "60000"
       - key: JWT_SECRET
         generateValue: true
       - key: GEMINI_API_KEY

@@ -132,7 +132,8 @@ export class TranslationService {
   private readonly fallbackModel: ChatGoogleGenerativeAI | null;
   private readonly primaryModelName: string;
   private readonly fallbackModelName: string | null;
-  private readonly translationTimeoutMs: number;
+  private readonly translationTimeoutMsText: number;
+  private readonly translationTimeoutMsMedia: number;
   private readonly translationModelMaxRetries: number;
   private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
   private readonly geminiApiKey: string;
@@ -144,8 +145,22 @@ export class TranslationService {
     this.ttsMaxConcurrency = this.resolveTtsMaxConcurrency(
       this.configService.get<string>('TTS_MAX_CONCURRENCY'),
     );
-    this.translationTimeoutMs = this.resolveTranslationTimeoutMs(
-      this.configService.get<string>('TRANSLATION_TIMEOUT_MS'),
+    this.translationTimeoutMsText = this.resolveTranslationTimeoutMs(
+      this.configService.get<string>('TRANSLATION_TIMEOUT_MS_TEXT') ??
+        this.configService.get<string>('TRANSLATION_TIMEOUT_MS'),
+      {
+        defaultValue: 20_000,
+        min: 5_000,
+        max: 45_000,
+      },
+    );
+    this.translationTimeoutMsMedia = this.resolveTranslationTimeoutMs(
+      this.configService.get<string>('TRANSLATION_TIMEOUT_MS_MEDIA'),
+      {
+        defaultValue: 60_000,
+        min: 15_000,
+        max: 120_000,
+      },
     );
     this.translationModelMaxRetries = this.resolveTranslationModelMaxRetries(
       this.configService.get<string>('TRANSLATION_MODEL_MAX_RETRIES'),
@@ -168,7 +183,7 @@ export class TranslationService {
       : null;
 
     this.logger.log(
-      `[TranslationService] primaryModel=${this.primaryModelName} fallbackModel=${this.fallbackModelName ?? 'none'} timeoutMs=${this.translationTimeoutMs} modelMaxRetries=${this.translationModelMaxRetries}`,
+      `[TranslationService] primaryModel=${this.primaryModelName} fallbackModel=${this.fallbackModelName ?? 'none'} timeoutTextMs=${this.translationTimeoutMsText} timeoutMediaMs=${this.translationTimeoutMsMedia} modelMaxRetries=${this.translationModelMaxRetries}`,
     );
   }
 
@@ -302,6 +317,7 @@ Examples of messages WITHOUT actions:
     }
 
     const inputType = this.getInputType(payload);
+    const timeoutMs = this.getTimeoutMsForInput(inputType);
     let lastError: unknown;
 
     for (let idx = 0; idx < modelCandidates.length; idx += 1) {
@@ -312,11 +328,11 @@ Examples of messages WITHOUT actions:
         const structuredModel =
           candidate.model.withStructuredOutput(TranslationSchema);
         const result = await structuredModel.invoke(messages, {
-          signal: AbortSignal.timeout(this.translationTimeoutMs),
+          signal: AbortSignal.timeout(timeoutMs),
         });
 
         this.logger.log(
-          `[translateIntent] success model=${candidate.modelName} inputType=${inputType} durationMs=${Date.now() - startedAt}`,
+          `[translateIntent] success model=${candidate.modelName} inputType=${inputType} timeoutMs=${timeoutMs} durationMs=${Date.now() - startedAt}`,
         );
 
         return {
@@ -327,10 +343,11 @@ Examples of messages WITHOUT actions:
       } catch (error) {
         lastError = error;
         const retryWithFallback =
-          idx < modelCandidates.length - 1 && this.isCapacityError(error);
+          idx < modelCandidates.length - 1 &&
+          this.isRetryableTranslationError(error);
 
         this.logger.warn(
-          `[translateIntent] failed model=${candidate.modelName} inputType=${inputType} durationMs=${Date.now() - startedAt} retryWithFallback=${retryWithFallback} error=${this.describeProviderError(error)}`,
+          `[translateIntent] failed model=${candidate.modelName} inputType=${inputType} timeoutMs=${timeoutMs} durationMs=${Date.now() - startedAt} retryWithFallback=${retryWithFallback} error=${this.describeProviderError(error)}`,
         );
 
         if (!retryWithFallback) {
@@ -358,13 +375,16 @@ Examples of messages WITHOUT actions:
     return normalized || defaultValue;
   }
 
-  private resolveTranslationTimeoutMs(rawValue: string | undefined): number {
+  private resolveTranslationTimeoutMs(
+    rawValue: string | undefined,
+    options: { defaultValue: number; min: number; max: number },
+  ): number {
     const parsed = Number.parseInt(rawValue ?? '', 10);
     if (!Number.isFinite(parsed)) {
-      return 20_000;
+      return options.defaultValue;
     }
 
-    return Math.min(45_000, Math.max(5_000, parsed));
+    return Math.min(options.max, Math.max(options.min, parsed));
   }
 
   private resolveTranslationModelMaxRetries(
@@ -392,9 +412,22 @@ Examples of messages WITHOUT actions:
     return 'text';
   }
 
-  private isCapacityError(error: unknown): boolean {
+  private getTimeoutMsForInput(inputType: 'text' | 'audio' | 'media'): number {
+    return inputType === 'text'
+      ? this.translationTimeoutMsText
+      : this.translationTimeoutMsMedia;
+  }
+
+  private isRetryableTranslationError(error: unknown): boolean {
     const message = this.describeProviderError(error).toLowerCase();
 
+    return (
+      this.isCapacityErrorMessage(message) ||
+      this.isTimeoutErrorMessage(message)
+    );
+  }
+
+  private isCapacityErrorMessage(message: string): boolean {
     return (
       message.includes('503') ||
       message.includes('service unavailable') ||
@@ -403,6 +436,15 @@ Examples of messages WITHOUT actions:
       message.includes('429') ||
       message.includes('rate limit') ||
       message.includes('overloaded')
+    );
+  }
+
+  private isTimeoutErrorMessage(message: string): boolean {
+    return (
+      message.includes('timeout') ||
+      message.includes('timed out') ||
+      message.includes('aborted') ||
+      message.includes('deadline exceeded')
     );
   }
 
