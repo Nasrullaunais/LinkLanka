@@ -21,7 +21,12 @@ export class PersonalContext {
   @Column({ type: 'varchar', length: 100, name: 'slang_word', nullable: false })
   slangWord!: string;
 
-  @Column({ type: 'varchar', length: 500, name: 'standard_meaning', nullable: false })
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'standard_meaning',
+    nullable: false,
+  })
   standardMeaning!: string;
 
   @Column({ type: 'varchar', length: 50, name: 'dialect_type', nullable: true })

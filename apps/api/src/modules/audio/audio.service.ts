@@ -1,16 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
+
+import { S3StorageService } from '../../core/common/storage';
 
 @Injectable()
 export class AudioService {
-  private readonly uploadsDir: string = join(process.cwd(), 'uploads');
+  constructor(private readonly s3StorageService: S3StorageService) {}
 
-  async saveAudioBuffer(
-    base64Data: string,
-    mimeType: string,
-  ): Promise<string> {
+  async saveAudioBuffer(base64Data: string, mimeType: string): Promise<string> {
     const cleanBase64: string = base64Data.includes(',')
       ? base64Data.split(',')[1]
       : base64Data;
@@ -20,13 +17,13 @@ export class AudioService {
     const extension: string = this.getExtensionFromMimeType(mimeType);
     const fileName: string = `${randomUUID()}${extension}`;
 
-    await mkdir(this.uploadsDir, { recursive: true });
+    const uploaded = await this.s3StorageService.uploadBuffer({
+      buffer,
+      fileName,
+      mimeType,
+    });
 
-    const filePath: string = join(this.uploadsDir, fileName);
-    await writeFile(filePath, buffer);
-
-    const baseUrl = process.env.BASE_URL ?? 'http://localhost:3000';
-    return `${baseUrl}/uploads/${fileName}`;
+    return uploaded.url;
   }
 
   private getExtensionFromMimeType(mimeType: string): string {

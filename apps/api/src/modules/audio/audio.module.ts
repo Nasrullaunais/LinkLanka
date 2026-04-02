@@ -7,6 +7,7 @@ import { GroupsModule } from '../groups/groups.module';
 import { PersonalContextModule } from '../personal-context/personal-context.module';
 import { TranslationModule } from '../translation/translation.module';
 import { ActionModule } from '../actions/action.module';
+import { StorageModule } from '../../core/common/storage';
 
 /**
  * AudioModule — owns the dedicated audio REST processing pipeline.
@@ -24,6 +25,7 @@ import { ActionModule } from '../actions/action.module';
     PersonalContextModule,
     TranslationModule,
     ActionModule,
+    StorageModule,
   ],
   controllers: [AudioController],
   providers: [AudioService],

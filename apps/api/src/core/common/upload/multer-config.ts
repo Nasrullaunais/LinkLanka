@@ -2,10 +2,11 @@
  * Reusable multer configuration factories for file upload endpoints.
  *
  * Usage:
- *   @UseInterceptors(FileInterceptor('file', mediaUploadOptions('./uploads')))
+ *   @UseInterceptors(FileInterceptor('file', mediaUploadOptions()))
  */
 import { BadRequestException } from '@nestjs/common';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
+import { memoryStorage } from 'multer';
 
 import {
   ALLOWED_MEDIA_MIMES,
@@ -39,18 +40,18 @@ function buildFileFilter(allowedMimes: Set<string>) {
 }
 
 /** Multer options for the general media upload endpoint. */
-export function mediaUploadOptions(dest: string): MulterOptions {
+export function mediaUploadOptions(): MulterOptions {
   return {
-    dest,
+    storage: memoryStorage(),
     limits: { fileSize: MAX_MEDIA_FILE_SIZE },
     fileFilter: buildFileFilter(ALLOWED_MEDIA_MIMES),
   };
 }
 
 /** Multer options for the profile-picture upload endpoint. */
-export function profilePictureUploadOptions(dest: string): MulterOptions {
+export function profilePictureUploadOptions(): MulterOptions {
   return {
-    dest,
+    storage: memoryStorage(),
     limits: { fileSize: MAX_PROFILE_PICTURE_SIZE },
     fileFilter: buildFileFilter(ALLOWED_PROFILE_PICTURE_MIMES),
   };

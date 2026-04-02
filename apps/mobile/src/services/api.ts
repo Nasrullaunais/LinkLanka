@@ -313,6 +313,7 @@ export async function retranslateMessage(messageId: string): Promise<Translation
 export interface AudioProcessResult {
   success: true;
   messageId: string;
+  rawContent: string;
 }
 
 /**
@@ -327,12 +328,14 @@ export async function processAudio(
   audioBase64: string,
   audioMimeType: string,
   durationMs?: number,
+  clientTempId?: string,
 ): Promise<AudioProcessResult> {
   const { data } = await apiClient.post<AudioProcessResult>('/audio/process', {
     groupId,
     audioBase64,
     audioMimeType,
     durationMs,
+    clientTempId,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
   return data;

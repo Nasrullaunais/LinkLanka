@@ -7,14 +7,19 @@ import {
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { IsString, IsArray, IsOptional, ValidateNested, IsIn } from 'class-validator';
+import {
+  IsString,
+  IsArray,
+  IsOptional,
+  ValidateNested,
+  IsIn,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../../core/identity/guards/jwt-auth.guard';
 import {
   DocumentAiService,
   SummaryBullet,
   QAResponse,
-  QAChatTurn,
 } from './document-ai.service';
 
 class QAChatTurnDto {

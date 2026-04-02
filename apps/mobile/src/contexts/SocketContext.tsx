@@ -40,12 +40,20 @@ export function SocketProvider({ children, userToken }: SocketProviderProps) {
 
     const instance = io(API_BASE_URL, {
       auth: { token: 'Bearer ' + userToken },
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
+      upgrade: true,
       autoConnect: true,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
     });
 
     instance.on('connect', () => setIsConnected(true));
     instance.on('disconnect', () => setIsConnected(false));
+    instance.on('connect_error', (err) => {
+      console.warn('[SocketContext] connect_error:', err.message);
+    });
 
     setSocket(instance);
 

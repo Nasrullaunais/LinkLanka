@@ -24,6 +24,10 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import type { SharedValue } from 'react-native-reanimated';
 import { API_BASE_URL } from '../../services/api';
+import {
+  getCachedMediaUri,
+  getStableMediaCacheKey,
+} from '../../services/mediaCache';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChatList } from '../../contexts/ChatListContext';
 import { useChatAudioPlayer } from '../../contexts/ChatAudioPlayerContext';
@@ -103,7 +107,8 @@ function normalizeAudioUri(uri: string): string {
 // ── Sub-Components ───────────────────────────────────────────────────────────
 /** Formats seconds into a m:ss string for the playback timer. */
 function formatAudioTime(secs: number): string {
-  const s = Math.max(0, Math.floor(secs));
+  const safeSecs = Number.isFinite(secs) ? secs : 0;
+  const s = Math.max(0, Math.floor(safeSecs));
   const m = Math.floor(s / 60);
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
@@ -250,6 +255,7 @@ const AudioPlayer = memo(function AudioPlayer({
 }) {
   const { colors } = useTheme();
   const normalizedUri = normalizeAudioUri(uri);
+  const [resolvedUri, setResolvedUri] = useState(normalizedUri);
   const audioCtx = useChatAudioPlayer(); // stable context — NEVER triggers re-renders
 
   // Shared values kept on the UI thread for smooth animation.
@@ -273,7 +279,10 @@ const AudioPlayer = memo(function AudioPlayer({
   const defaultLabel = initialDurationMs > 0 ? formatAudioTime(initialDurationMs / 1000) : '0:00';
   const [timeLabel, setTimeLabel] = useState(defaultLabel);
   const updateTimeLabel = useCallback(
-    (remaining: number) => setTimeLabel(formatAudioTime(remaining)),
+    (remaining: number) => {
+      const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
+      setTimeLabel(formatAudioTime(safeRemaining));
+    },
     [],
   );
   const resetTimeLabel = useCallback(() => setTimeLabel(defaultLabel), [defaultLabel]);
@@ -294,7 +303,8 @@ const AudioPlayer = memo(function AudioPlayer({
       }
       if (curr.sec !== (prev?.sec ?? -1)) {
         const rem = audioCtx.durationSV.value - audioCtx.currentTimeSV.value;
-        runOnJS(updateTimeLabel)(Math.max(0, rem));
+        const safeRem = Number.isFinite(rem) ? Math.max(0, rem) : 0;
+        runOnJS(updateTimeLabel)(safeRem);
       }
     },
   );
@@ -308,10 +318,25 @@ const AudioPlayer = memo(function AudioPlayer({
     width: trackWidthSV.value,
   }));
 
+  useEffect(() => {
+    setResolvedUri(normalizedUri);
+  }, [normalizedUri]);
+
   const handleToggle = useCallback(() => {
     if (!normalizedUri) return;
-    audioCtx.toggle(messageId, normalizedUri);
-  }, [audioCtx, messageId, normalizedUri]);
+
+    const activeMessage = audioCtx.activeMessageId.value === messageId;
+    if (activeMessage) {
+      audioCtx.toggle(messageId, resolvedUri);
+      return;
+    }
+
+    void (async () => {
+      const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
+      setResolvedUri(cachedUri);
+      audioCtx.toggle(messageId, cachedUri);
+    })();
+  }, [audioCtx, messageId, normalizedUri, resolvedUri]);
 
   const handleSeek = useCallback(
     (evt: { nativeEvent: { locationX: number } }) => {
@@ -476,6 +501,8 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
   const audioCtx = useChatAudioPlayer();
   const { colors } = useTheme();
   const playbackId = `${messageId}:translated:${entry.language}`;
+  const normalizedUri = normalizeAudioUri(entry.url);
+  const [resolvedUri, setResolvedUri] = useState(normalizedUri);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const expandedProgress = useSharedValue(0);
@@ -510,10 +537,25 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
     return { width: `${audioCtx.smoothProgress.value * 100}%` };
   });
 
+  useEffect(() => {
+    setResolvedUri(normalizedUri);
+  }, [normalizedUri]);
+
   const handlePress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    audioCtx.toggle(playbackId, normalizeAudioUri(entry.url));
-  }, [audioCtx, playbackId, entry.url]);
+
+    const activeMessage = audioCtx.activeMessageId.value === playbackId;
+    if (activeMessage) {
+      audioCtx.toggle(playbackId, resolvedUri);
+      return;
+    }
+
+    void (async () => {
+      const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
+      setResolvedUri(cachedUri);
+      audioCtx.toggle(playbackId, cachedUri);
+    })();
+  }, [audioCtx, normalizedUri, playbackId, resolvedUri]);
 
   return (
     <Animated.View style={[styles.translatedAudioBtnShell, shellStyle]}>
@@ -865,8 +907,12 @@ function MessageBubble({
       case 'IMAGE':
         return (
           <Image
-            source={{ uri: rawContent }}
+            source={{
+              uri: rawContent,
+              cacheKey: getStableMediaCacheKey(rawContent),
+            }}
             style={styles.image}
+            cachePolicy="disk"
             contentFit="cover"
             transition={200}
             recyclingKey={message.id}
@@ -880,8 +926,13 @@ function MessageBubble({
           try {
             const parsed = JSON.parse(rawContent);
             if (typeof parsed.url === 'string') uri = parsed.url;
-            if (typeof parsed.durationMs === 'number') durationMs = parsed.durationMs;
-          } catch (e) {}
+            if (
+              typeof parsed.durationMs === 'number' &&
+              Number.isFinite(parsed.durationMs)
+            ) {
+              durationMs = parsed.durationMs;
+            }
+          } catch {}
         }
         
         const isInaudible =
@@ -938,7 +989,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means

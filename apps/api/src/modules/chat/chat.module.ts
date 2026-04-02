@@ -16,6 +16,7 @@ import { TranslationModule } from '../translation/translation.module';
 import { GroupsModule } from '../groups/groups.module';
 import { ActionModule } from '../actions/action.module';
 import { NotificationModule } from '../notification/notification.module';
+import { StorageModule } from '../../core/common/storage';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { NotificationModule } from '../notification/notification.module';
     GroupsModule,
     ActionModule,
     NotificationModule,
+    StorageModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

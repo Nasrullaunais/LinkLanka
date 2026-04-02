@@ -38,7 +38,10 @@ export class Message {
   @Column({ type: 'uuid', name: 'group_id', nullable: false })
   groupId!: string;
 
-  @ManyToOne(() => ChatGroup, (g) => g.messages, { onDelete: 'CASCADE', eager: false })
+  @ManyToOne(() => ChatGroup, (g) => g.messages, {
+    onDelete: 'CASCADE',
+    eager: false,
+  })
   @JoinColumn({ name: 'group_id' })
   group!: ChatGroup;
 
@@ -76,7 +79,12 @@ export class Message {
   @Column({ type: 'jsonb', nullable: true })
   summary: { text: string; page: number | null }[] | null;
 
-  @Column({ type: 'boolean', name: 'is_edited', default: false, nullable: false })
+  @Column({
+    type: 'boolean',
+    name: 'is_edited',
+    default: false,
+    nullable: false,
+  })
   isEdited: boolean;
 
   /** AI-extracted actionable items (meetings, reminders) from the message content. */

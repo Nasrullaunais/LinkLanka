@@ -1,5 +1,3 @@
-import * as path from 'path';
-
 import { JwtService } from '@nestjs/jwt';
 import { Logger, UseFilters, UseGuards } from '@nestjs/common';
 import {
@@ -33,6 +31,7 @@ import {
   ExtractedAction,
   TranslatedAudioUrls,
 } from '../translation/translation.service';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 interface JoinRoomPayload {
   groupId: string;
@@ -45,6 +44,7 @@ interface RawJoinRoomPayload {
 
 interface SendMessagePayload {
   groupId: string;
+  clientTempId?: string;
   nativeDialect: string;
   targetLanguages: string[];
   contentType: MessageContentType;
@@ -76,6 +76,8 @@ interface EditMessagePayload {
 interface RawSendMessagePayload {
   groupId?: unknown;
   group_id?: unknown;
+  clientTempId?: unknown;
+  client_temp_id?: unknown;
   nativeDialect?: unknown;
   targetLanguages?: unknown;
   contentType?: unknown;
@@ -91,6 +93,10 @@ interface RawSendMessagePayload {
   fileMimeType?: unknown;
   file_mime_type?: unknown;
   timezone?: unknown;
+}
+
+interface SignedReadUrlCreator {
+  createSignedReadUrl(fileUrlOrKey: string): Promise<string>;
 }
 
 @UseFilters(new WsAllExceptionsFilter())
@@ -109,6 +115,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly translationService: TranslationService,
     private readonly actionService: ActionService,
     private readonly notificationService: NotificationService,
+    private readonly s3StorageService: S3StorageService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket): Promise<void> {
@@ -264,6 +271,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ? normalizedPayload.fileUrl
       : undefined;
 
+    const signedFileUrl: string | undefined = isMedia
+      ? await this.signRawMediaContent(normalizedPayload.fileUrl ?? '')
+      : undefined;
+
     const rawContentToSave: string = isMedia
       ? normalizedPayload.fileUrl!
       : normalizedPayload.rawContent!;
@@ -293,9 +304,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // display the raw message right away with an "AI translating…" indicator.
     this.server.to(normalizedPayload.groupId).emit('newMessage', {
       messageId: message.id,
+      clientTempId: normalizedPayload.clientTempId,
       senderId: userId,
       contentType: normalizedPayload.contentType,
-      fileUrl: fileUrl ?? normalizedPayload.fileUrl,
+      fileUrl: signedFileUrl ?? fileUrl ?? normalizedPayload.fileUrl,
       transcription: null,
       originalText,
       translations: null,
@@ -360,12 +372,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       if (isMedia) {
-        const fileName = normalizedPayload.fileUrl!.split('/').pop()!;
-        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
+        const mediaBuffer = await this.s3StorageService.downloadBufferFromUrl(
+          normalizedPayload.fileUrl!,
+        );
 
         const result = await this.translationService.translateIntent({
-          localFilePath,
-          fileMimeType: normalizedPayload.fileMimeType,
+          mediaBase64: mediaBuffer.toString('base64'),
+          mediaMimeType: normalizedPayload.fileMimeType,
           rawText: normalizedPayload.rawContent,
           chatHistory: [],
           userDictionary,
@@ -474,10 +487,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * Broadcasts a `newMessage` event to every socket in the given room.
    * Called by AudioController after saving the raw message in Phase 1.
    */
-  broadcastNewMessage(
+  async broadcastNewMessage(
     groupId: string,
     payload: {
       messageId: string;
+      clientTempId?: string;
       senderId: string;
       contentType: MessageContentType;
       fileUrl?: string;
@@ -490,8 +504,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       confidenceScore: number | null;
       extractedActions?: ExtractedAction[] | null;
     },
-  ): void {
-    this.server.to(groupId).emit('newMessage', payload);
+  ): Promise<void> {
+    const signedPayload = {
+      ...payload,
+      fileUrl:
+        payload.fileUrl && payload.contentType !== MessageContentType.TEXT
+          ? await this.signRawMediaContent(payload.fileUrl)
+          : payload.fileUrl,
+      translatedAudioUrls: await this.signTranslatedAudioUrls(
+        payload.translatedAudioUrls,
+      ),
+    };
+
+    this.server.to(groupId).emit('newMessage', signedPayload);
     this.emitConversationUpdated(groupId).catch((err) =>
       this.logger.warn(
         `[emitConversationUpdated] groupId=${groupId} failed: ${String(err)}`,
@@ -506,7 +531,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * Broadcasts a `messageTranslated` event after Phase 2 translation completes.
    * Also fires push notifications since the translated text is now available.
    */
-  broadcastTranslationUpdate(
+  async broadcastTranslationUpdate(
     groupId: string,
     senderId: string,
     payload: {
@@ -520,8 +545,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       extractedActions?: ExtractedAction[] | null;
     },
     fallbackText: string,
-  ): void {
-    this.server.to(groupId).emit('messageTranslated', payload);
+  ): Promise<void> {
+    const signedPayload = {
+      ...payload,
+      translatedAudioUrls: await this.signTranslatedAudioUrls(
+        payload.translatedAudioUrls,
+      ),
+    };
+
+    this.server.to(groupId).emit('messageTranslated', signedPayload);
     this.logger.log(
       `[broadcastTranslationUpdate] messageTranslated emitted to room ${groupId}, messageId=${payload.messageId}`,
     );
@@ -530,7 +562,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.sendChatNotification(
       groupId,
       senderId,
-      payload.translations,
+      signedPayload.translations,
       fallbackText,
     ).catch((err) =>
       this.logger.error(`[sendChatNotification] ${String(err)}`),
@@ -889,6 +921,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     payload: RawSendMessagePayload,
   ): SendMessagePayload {
     const groupIdValue: unknown = payload.groupId ?? payload.group_id;
+    const clientTempIdValue: unknown =
+      payload.clientTempId ?? payload.client_temp_id;
     const contentTypeValue: unknown =
       payload.contentType ?? payload.content_type;
     const rawContentValue: unknown = payload.rawContent ?? payload.raw_content;
@@ -966,8 +1000,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
     }
 
+    if (
+      clientTempIdValue !== undefined &&
+      typeof clientTempIdValue !== 'string'
+    ) {
+      throw new WsException(
+        'Invalid payload: clientTempId (or client_temp_id) must be a string when provided',
+      );
+    }
+
     return {
       groupId: groupIdValue,
+      clientTempId:
+        typeof clientTempIdValue === 'string' && clientTempIdValue.trim()
+          ? clientTempIdValue.trim()
+          : undefined,
       nativeDialect:
         typeof nativeDialectValue === 'string'
           ? nativeDialectValue
@@ -1049,5 +1096,68 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private normalizeToken(value: string): string {
     const prefix: string = 'Bearer ';
     return value.startsWith(prefix) ? value.slice(prefix.length).trim() : value;
+  }
+
+  private async signRawMediaContent(rawContent: string): Promise<string> {
+    const trimmed = rawContent.trim();
+    if (!trimmed) {
+      return rawContent;
+    }
+
+    if (!trimmed.startsWith('{')) {
+      return this.createSignedReadUrl(trimmed);
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const rawUrl =
+        typeof parsed.url === 'string' && parsed.url.trim().length > 0
+          ? parsed.url.trim()
+          : null;
+
+      if (!rawUrl) {
+        return rawContent;
+      }
+
+      const signedUrl = await this.createSignedReadUrl(rawUrl);
+
+      return JSON.stringify({
+        ...parsed,
+        url: signedUrl,
+      });
+    } catch {
+      return this.createSignedReadUrl(trimmed);
+    }
+  }
+
+  private async createSignedReadUrl(fileUrlOrKey: string): Promise<string> {
+    const signer = this.s3StorageService as unknown as SignedReadUrlCreator;
+    return signer.createSignedReadUrl(fileUrlOrKey);
+  }
+
+  private async signTranslatedAudioUrls(
+    urls: TranslatedAudioUrls | null | undefined,
+  ): Promise<TranslatedAudioUrls | null | undefined> {
+    if (urls === undefined) {
+      return undefined;
+    }
+
+    if (urls === null) {
+      return null;
+    }
+
+    const signed: TranslatedAudioUrls = {};
+
+    if (urls.english) {
+      signed.english = await this.createSignedReadUrl(urls.english);
+    }
+    if (urls.singlish) {
+      signed.singlish = await this.createSignedReadUrl(urls.singlish);
+    }
+    if (urls.tanglish) {
+      signed.tanglish = await this.createSignedReadUrl(urls.tanglish);
+    }
+
+    return Object.keys(signed).length > 0 ? signed : null;
   }
 }

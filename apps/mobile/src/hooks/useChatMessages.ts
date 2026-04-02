@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Platform, ToastAndroid } from 'react-native';
 import type { Socket } from 'socket.io-client';
+import { File } from 'expo-file-system';
 
 import apiClient, { retranslateMessage, processAudio, uploadMedia } from '../services/api';
 import type { ChatMessage } from '../components/chat/MessageBubble';
 import { useChatMessageCache } from '../contexts/ChatMessageCacheContext';
+import {
+  MAX_MEDIA_OUTBOX_RETRY_ATTEMPTS,
+  type QueuedMediaJob,
+  type QueuedMediaType,
+  getMediaOutboxBackoffMs,
+  getMediaOutboxErrorMessage,
+  loadMediaOutbox,
+  saveMediaOutbox,
+  shouldRetryMediaOutboxError,
+} from '../services/mediaOutbox';
 
 // ── Payload type coming from ChatInput ───────────────────────────────────────
 export interface ChatPayload {
@@ -20,6 +31,7 @@ export interface ChatPayload {
 // ── Shape broadcasted by the server via "newMessage" ─────────────────────────
 interface NewMessageEvent {
   messageId: string;
+  clientTempId?: string;
   senderId: string;
   contentType: 'TEXT' | 'AUDIO' | 'IMAGE' | 'DOCUMENT';
   fileUrl?: string;
@@ -161,6 +173,61 @@ interface DeleteFailedEvent {
 
 interface HideFailedEvent {
   reason: string;
+}
+
+interface SendMessageAck {
+  id: string;
+  rawContent: string;
+}
+
+function createClientTempId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+function buildQueuedMediaJob(
+  groupId: string,
+  optimisticId: string,
+  payload: ChatPayload,
+): QueuedMediaJob {
+  const nowIso = new Date().toISOString();
+
+  if (payload.type === 'AUDIO') {
+    return {
+      id: createClientTempId(),
+      groupId,
+      optimisticId,
+      mediaType: 'AUDIO',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      attemptCount: 0,
+      nextAttemptAt: Date.now(),
+      audio: {
+        localUri: payload.localUri ?? '',
+        mimeType: payload.mimeType ?? 'audio/mp4',
+        durationMs: payload.durationMs,
+      },
+    };
+  }
+
+  return {
+    id: createClientTempId(),
+    groupId,
+    optimisticId,
+    mediaType: payload.type as Exclude<QueuedMediaType, 'AUDIO'>,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    attemptCount: 0,
+    nextAttemptAt: Date.now(),
+    file: {
+      fileUri: payload.content,
+      mimeType:
+        payload.mimeType ??
+        (payload.type === 'DOCUMENT' ? 'application/pdf' : 'image/jpeg'),
+    },
+  };
 }
 
 const PAGE_SIZE = 30;
@@ -351,7 +418,170 @@ export function useChatMessages({
   const hasMoreRef         = useRef(initialCacheRef.current?.hasMore ?? true);
   const oldestCursorRef    = useRef<string | null>(initialCacheRef.current?.oldestCursor ?? null); // createdAt of oldest loaded msg
   const onNewMessageRef    = useRef<(() => void) | undefined>(onNewMessage);
+  const outboxJobsRef = useRef<QueuedMediaJob[]>([]);
+  const outboxDrainInFlightRef = useRef(false);
+  const outboxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { onNewMessageRef.current = onNewMessage; }, [onNewMessage]);
+
+  const persistOutboxJobs = useCallback(
+    async (jobs: QueuedMediaJob[]) => {
+      outboxJobsRef.current = jobs;
+      await saveMediaOutbox(groupId, jobs);
+    },
+    [groupId],
+  );
+
+  const scheduleOutboxDrain = useCallback((delayMs = 0) => {
+    if (outboxTimerRef.current) {
+      clearTimeout(outboxTimerRef.current);
+    }
+
+    outboxTimerRef.current = setTimeout(() => {
+      outboxTimerRef.current = null;
+      void drainOutboxRef.current();
+    }, Math.max(0, delayMs));
+  }, []);
+
+  const removeOptimisticMessage = useCallback((optimisticId: string) => {
+    optimisticIdsRef.current.delete(optimisticId);
+    setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+  }, []);
+
+  const reconcileOptimisticMessage = useCallback(
+    (
+      optimisticId: string,
+      serverMessageId: string,
+      serverRawContent: string,
+      forceTranslating = false,
+    ) => {
+      optimisticIdsRef.current.delete(optimisticId);
+
+      setMessages((prev) => {
+        const byOptimistic = prev.findIndex((m) => m.id === optimisticId);
+        const byServerId = prev.findIndex((m) => m.id === serverMessageId);
+        const targetIndex = byOptimistic !== -1 ? byOptimistic : byServerId;
+        if (targetIndex === -1) return prev;
+
+        const next = [...prev];
+        const current = next[targetIndex];
+        next[targetIndex] = {
+          ...current,
+          id: serverMessageId,
+          rawContent: serverRawContent || current.rawContent,
+          isOptimistic: false,
+          isTranslating: forceTranslating || current.isTranslating,
+        };
+        return next;
+      });
+    },
+    [],
+  );
+
+  const emitSendMessageWithAck = useCallback(
+    (
+      payload: Record<string, unknown>,
+      timeoutMs = 12_000,
+    ): Promise<SendMessageAck> => {
+      if (!socket) {
+        return Promise.reject(new Error('Socket is not connected'));
+      }
+
+      return new Promise<SendMessageAck>((resolve, reject) => {
+        let settled = false;
+
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(new Error('sendMessage ack timed out'));
+        }, timeoutMs);
+
+        socket.emit('sendMessage', payload, (ack: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+
+          if (!ack || typeof ack !== 'object') {
+            reject(new Error('Invalid sendMessage acknowledgement'));
+            return;
+          }
+
+          const parsed = ack as Record<string, unknown>;
+          if (typeof parsed.id !== 'string' || !parsed.id.trim()) {
+            reject(new Error('Missing message id in acknowledgement'));
+            return;
+          }
+
+          resolve({
+            id: parsed.id.trim(),
+            rawContent:
+              typeof parsed.rawContent === 'string' ? parsed.rawContent : '',
+          });
+        });
+      });
+    },
+    [socket],
+  );
+
+  const sendQueuedMediaJob = useCallback(
+    async (
+      job: QueuedMediaJob,
+    ): Promise<{ messageId: string; rawContent: string; forceTranslating: boolean }> => {
+      if (job.mediaType === 'AUDIO') {
+        const localUri = job.audio?.localUri;
+        if (!localUri) {
+          throw new Error('Queued audio is missing localUri');
+        }
+
+        const audioFile = new File(localUri);
+        const base64 = await audioFile.base64();
+        if (!base64 || base64.length < 10) {
+          throw new Error('Queued audio file is empty or unavailable');
+        }
+
+        const result = await processAudio(
+          groupId,
+          base64,
+          job.audio?.mimeType ?? 'audio/mp4',
+          job.audio?.durationMs,
+          job.optimisticId,
+        );
+
+        return {
+          messageId: result.messageId,
+          rawContent: result.rawContent,
+          forceTranslating: true,
+        };
+      }
+
+      const fileUri = job.file?.fileUri;
+      if (!fileUri) {
+        throw new Error('Queued media is missing fileUri');
+      }
+
+      const mimeType =
+        job.file?.mimeType ??
+        (job.mediaType === 'DOCUMENT' ? 'application/pdf' : 'image/jpeg');
+
+      const uploaded = await uploadMedia(fileUri, mimeType);
+      const ack = await emitSendMessageWithAck({
+        groupId,
+        clientTempId: job.optimisticId,
+        contentType: job.mediaType,
+        fileUrl: uploaded.url,
+        ...(job.mediaType === 'DOCUMENT' ? { fileMimeType: mimeType } : {}),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+
+      return {
+        messageId: ack.id,
+        rawContent: ack.rawContent || uploaded.url,
+        forceTranslating: false,
+      };
+    },
+    [emitSendMessageWithAck, groupId],
+  );
+
+  const drainOutboxRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     const cached = getChatCache(groupId);
@@ -362,7 +592,7 @@ export function useChatMessages({
     hasMoreRef.current = cached.hasMore;
     oldestCursorRef.current = cached.oldestCursor;
     setIsLoadingHistory(false);
-  }, [groupId, getChatCache]);
+  }, [groupId, getChatCache, userId]);
 
   const flushQueuedPatches = useCallback(() => {
     flushTimerRef.current = null;
@@ -408,6 +638,172 @@ export function useChatMessages({
     };
   }, []);
 
+  const drainMediaOutbox = useCallback(async () => {
+    if (outboxDrainInFlightRef.current) return;
+    if (!userId) return;
+
+    const existingJobs = outboxJobsRef.current;
+    if (existingJobs.length === 0) return;
+
+    outboxDrainInFlightRef.current = true;
+
+    try {
+      let jobs = [...existingJobs];
+
+      while (jobs.length > 0) {
+        const now = Date.now();
+        const job = jobs[0];
+
+        if (!socket && job.mediaType !== 'AUDIO') {
+          scheduleOutboxDrain(2_000);
+          break;
+        }
+
+        if (job.nextAttemptAt > now) {
+          scheduleOutboxDrain(job.nextAttemptAt - now);
+          break;
+        }
+
+        try {
+          const sent = await sendQueuedMediaJob(job);
+          jobs = jobs.slice(1);
+          await persistOutboxJobs(jobs);
+
+          reconcileOptimisticMessage(
+            job.optimisticId,
+            sent.messageId,
+            sent.rawContent,
+            sent.forceTranslating,
+          );
+        } catch (error) {
+          const attemptCount = job.attemptCount + 1;
+          const retryable = shouldRetryMediaOutboxError(error);
+
+          if (!retryable || attemptCount > MAX_MEDIA_OUTBOX_RETRY_ATTEMPTS) {
+            jobs = jobs.slice(1);
+            await persistOutboxJobs(jobs);
+            removeOptimisticMessage(job.optimisticId);
+
+            Alert.alert(
+              'Send Failed',
+              getMediaOutboxErrorMessage(error),
+            );
+            continue;
+          }
+
+          const nextDelayMs = getMediaOutboxBackoffMs(attemptCount);
+          const updatedJob: QueuedMediaJob = {
+            ...job,
+            attemptCount,
+            updatedAt: new Date().toISOString(),
+            nextAttemptAt: Date.now() + nextDelayMs,
+            lastError: getMediaOutboxErrorMessage(error),
+          };
+
+          jobs = [updatedJob, ...jobs.slice(1)];
+          await persistOutboxJobs(jobs);
+          scheduleOutboxDrain(nextDelayMs);
+          break;
+        }
+      }
+    } finally {
+      outboxDrainInFlightRef.current = false;
+    }
+  }, [
+    persistOutboxJobs,
+    reconcileOptimisticMessage,
+    removeOptimisticMessage,
+    scheduleOutboxDrain,
+    sendQueuedMediaJob,
+    socket,
+    userId,
+  ]);
+
+  useEffect(() => {
+    drainOutboxRef.current = drainMediaOutbox;
+  }, [drainMediaOutbox]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const jobs = await loadMediaOutbox(groupId);
+      if (cancelled) return;
+
+      outboxJobsRef.current = jobs;
+      if (jobs.length === 0) return;
+
+      // Restore pending optimistic media messages after app restarts.
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((message) => message.id));
+        const restored: ChatMessage[] = [];
+
+        for (const job of jobs) {
+          if (existingIds.has(job.optimisticId)) continue;
+
+          if (job.mediaType === 'AUDIO') {
+            if (!job.audio?.localUri) continue;
+            optimisticIdsRef.current.add(job.optimisticId);
+            restored.push({
+              id: job.optimisticId,
+              senderId: userId ?? '',
+              contentType: 'AUDIO',
+              rawContent: JSON.stringify({
+                url: job.audio.localUri,
+                durationMs: job.audio.durationMs ?? 0,
+              }),
+              translations: null,
+              confidenceScore: null,
+              isOptimistic: true,
+              createdAt: job.createdAt,
+            });
+            continue;
+          }
+
+          const fileUri = job.file?.fileUri;
+          if (!fileUri) continue;
+
+          optimisticIdsRef.current.add(job.optimisticId);
+
+          restored.push({
+            id: job.optimisticId,
+            senderId: userId ?? '',
+            contentType: job.mediaType,
+            rawContent: fileUri,
+            translations: null,
+            confidenceScore: null,
+            isOptimistic: true,
+            createdAt: job.createdAt,
+          });
+        }
+
+        if (restored.length === 0) return prev;
+        return mergeMessagesById(prev, restored);
+      });
+
+      if (isConnected && socket && userId) {
+        void drainOutboxRef.current();
+      } else {
+        const nextDue = jobs[0]?.nextAttemptAt ?? Date.now();
+        scheduleOutboxDrain(Math.max(0, nextDue - Date.now()));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (outboxTimerRef.current != null) {
+        clearTimeout(outboxTimerRef.current);
+        outboxTimerRef.current = null;
+      }
+    };
+  }, [groupId, isConnected, scheduleOutboxDrain, socket, userId]);
+
+  useEffect(() => {
+    if (!isConnected || !socket || !userId) return;
+    if (outboxJobsRef.current.length === 0) return;
+    void drainOutboxRef.current();
+  }, [isConnected, socket, userId]);
+
   // ── 1. Fetch most-recent PAGE_SIZE messages on mount ─────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -452,7 +848,7 @@ export function useChatMessages({
     return () => {
       cancelled = true;
     };
-  }, [groupId, getChatCache]);
+  }, [groupId, getChatCache, userId]);
 
   // ── 2. Load older messages (cursor-based infinite scroll) ─────────────────
   const loadOlderMessages = useCallback(async () => {
@@ -488,7 +884,7 @@ export function useChatMessages({
       isFetchingRef.current = false;
       setIsFetchingOlder(false);
     }
-  }, [groupId]);
+  }, [groupId, userId]);
 
   // ── 3. Join room & listen for server broadcasts ───────────────────────────
   useEffect(() => {
@@ -503,9 +899,12 @@ export function useChatMessages({
       enqueueMessagesPatch((ctx) => {
         // If the sender is the current user, reconcile the optimistic entry
         if (evt.senderId === userId) {
-          const idx = ctx.messages.findIndex(
-            (m) => m.isOptimistic && m.senderId === userId,
-          );
+          const idx =
+            typeof evt.clientTempId === 'string' && evt.clientTempId.trim()
+              ? ctx.messages.findIndex((m) => m.id === evt.clientTempId)
+              : ctx.messages.findIndex(
+                  (m) => m.isOptimistic && m.senderId === userId,
+                );
 
           if (idx !== -1) {
             const optimisticId = ctx.messages[idx].id;
@@ -715,15 +1114,9 @@ export function useChatMessages({
   // ── 5. Sending logic ──────────────────────────────────────────────────────
   const handleSendMessage = useCallback(
     async (payload: ChatPayload) => {
-      if (!socket || !userId) return;
+      if (!userId) return;
 
-      const optimisticId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(
-        /[xy]/g,
-        (c) => {
-          const r = (Math.random() * 16) | 0;
-          return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-        },
-      );
+      const optimisticId = createClientTempId();
       const optimisticMessage: ChatMessage = {
         id: optimisticId,
         senderId: userId,
@@ -743,63 +1136,39 @@ export function useChatMessages({
       onNewMessageRef.current?.();
 
       try {
-        if (payload.type === 'IMAGE') {
-          const formData = new FormData();
-          const fileName = payload.content.split('/').pop() ?? 'image.jpg';
+        if (payload.type === 'TEXT') {
+          if (!socket) {
+            throw new Error('Chat connection is unavailable');
+          }
 
-          formData.append('file', {
-            uri: payload.content,
-            name: fileName,
-            type: payload.mimeType ?? 'image/jpeg',
-          } as unknown as Blob);
-
-          const { data } = await apiClient.post<{ url: string }>(
-            '/media/upload',
-            formData,
-            { headers: { 'Content-Type': 'multipart/form-data' } },
-          );
-
-          socket.emit('sendMessage', {
+          const ack = await emitSendMessageWithAck({
             groupId,
-            contentType: 'IMAGE',
-            fileUrl: data.url,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-        } else if (payload.type === 'AUDIO') {
-          // Audio is processed via the dedicated REST endpoint.
-          // Phase 1 returns immediately — Phase 2 translates asynchronously.
-          await processAudio(
-            groupId,
-            payload.content,
-            payload.mimeType ?? 'audio/mp4',
-            payload.durationMs,
-          );
-        } else if (payload.type === 'DOCUMENT') {
-          const { url } = await uploadMedia(
-            payload.content,
-            payload.mimeType ?? 'application/pdf',
-          );
-
-          socket.emit('sendMessage', {
-            groupId,
-            contentType: 'DOCUMENT',
-            fileUrl: url,
-            fileMimeType: payload.mimeType ?? 'application/pdf',
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-        } else {
-          socket.emit('sendMessage', {
-            groupId,
+            clientTempId: optimisticId,
             contentType: 'TEXT',
             rawContent: payload.content,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           });
+
+          reconcileOptimisticMessage(
+            optimisticId,
+            ack.id,
+            ack.rawContent || payload.content,
+          );
+          return;
         }
+
+        if (payload.type === 'AUDIO' && !payload.localUri) {
+          throw new Error('Audio recording path is missing');
+        }
+
+        const mediaJob = buildQueuedMediaJob(groupId, optimisticId, payload);
+        const nextJobs = [...outboxJobsRef.current, mediaJob];
+        await persistOutboxJobs(nextJobs);
+        scheduleOutboxDrain(0);
       } catch (error) {
         console.error('[useChatMessages] Failed to send message:', error);
 
-        optimisticIdsRef.current.delete(optimisticId);
-        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+        removeOptimisticMessage(optimisticId);
 
         const serverReason = (error as any)?.response?.data?.reason;
         if (serverReason === 'audioNotAudible') {
@@ -815,7 +1184,16 @@ export function useChatMessages({
         );
       }
     },
-    [socket, userId, groupId],
+    [
+      emitSendMessageWithAck,
+      groupId,
+      persistOutboxJobs,
+      reconcileOptimisticMessage,
+      removeOptimisticMessage,
+      scheduleOutboxDrain,
+      socket,
+      userId,
+    ],
   );
 
   // ── 6. Retry translation handler ──────────────────────────────────────────

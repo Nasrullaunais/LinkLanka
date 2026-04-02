@@ -26,6 +26,7 @@ nano .env
 ```
 
 Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+Set S3 values for uploads: `AWS_S3_BUCKET`, `AWS_S3_REGION`, `AWS_S3_PREFIX`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`.
 Optional translation tuning: set `GEMINI_TRANSLATION_MODEL`, `GEMINI_TRANSLATION_FALLBACK_MODEL`, `TRANSLATION_MODEL_MAX_RETRIES`, `TRANSLATION_TIMEOUT_MS_TEXT`, and `TRANSLATION_TIMEOUT_MS_MEDIA`.
 
 1. Copy Firebase credentials (ask lead dev for the file).
@@ -82,6 +83,7 @@ notepad .env
 ```
 
 Set `DB_PASSWORD`, `JWT_SECRET`, and `GEMINI_API_KEY`.
+Set S3 values for uploads: `AWS_S3_BUCKET`, `AWS_S3_REGION`, `AWS_S3_PREFIX`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`.
 Optional translation tuning: set `GEMINI_TRANSLATION_MODEL`, `GEMINI_TRANSLATION_FALLBACK_MODEL`, `TRANSLATION_MODEL_MAX_RETRIES`, `TRANSLATION_TIMEOUT_MS_TEXT`, and `TRANSLATION_TIMEOUT_MS_MEDIA`.
 
 1. Copy Firebase credentials (ask lead dev for the file).
@@ -118,4 +120,5 @@ bun run android
 
 - Check running containers: `docker compose ps`
 - Android emulator API URL should be `http://10.0.2.2:3000` in `apps/mobile/.env`
+- Keep `AWS_S3_PREFIX=linklanka/` so uploads stay inside the expected bucket folder.
 - If `apps/mobile/node_modules` is root-owned (Linux/macOS): `sudo chown -R $USER:$USER apps/mobile/node_modules`

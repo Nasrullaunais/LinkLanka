@@ -1,5 +1,8 @@
 import { IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import type { DialectTargetLanguage, DialectTargetTone } from '../dialect.service';
+import type {
+  DialectTargetLanguage,
+  DialectTargetTone,
+} from '../dialect.service';
 
 export class RefineTextV2Dto {
   @IsString()

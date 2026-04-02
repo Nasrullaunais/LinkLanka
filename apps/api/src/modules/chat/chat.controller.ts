@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 
 import {
@@ -25,9 +24,19 @@ import {
   Translations,
   TranslatedAudioUrls,
 } from '../translation/translation.service';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 interface AuthRequest {
   user: { sub: string; email: string };
+}
+
+interface StoredMediaReference {
+  fileUrl: string;
+  fileName: string;
+}
+
+interface SignedReadUrlCreator {
+  createSignedReadUrl(fileUrlOrKey: string): Promise<string>;
 }
 
 @Controller('chat')
@@ -40,6 +49,7 @@ export class ChatController {
     private readonly groupsService: GroupsService,
     private readonly personalContextService: PersonalContextService,
     private readonly translationService: TranslationService,
+    private readonly s3StorageService: S3StorageService,
   ) {}
 
   @Get('groups/:groupId/messages')
@@ -57,20 +67,24 @@ export class ChatController {
 
     // If a cursor is provided, use cursor-based pagination (infinite scroll)
     if (before) {
-      return this.chatService.getCursorHistory(
+      const messages = await this.chatService.getCursorHistory(
         groupId,
         req!.user.sub,
         before,
         parseInt(limit, 10) || 30,
       );
+
+      return this.hydrateMessageMediaUrls(messages);
     }
 
-    return this.chatService.getPaginatedHistory(
+    const messages = await this.chatService.getPaginatedHistory(
       groupId,
       req!.user.sub,
       parseInt(page, 10) || 1,
       parseInt(limit, 10) || 50,
     );
+
+    return this.hydrateMessageMediaUrls(messages);
   }
 
   @Get('groups/:groupId/messages/all')
@@ -82,7 +96,13 @@ export class ChatController {
     if (!isMember) {
       throw new ForbiddenException('You are not a member of this conversation');
     }
-    return this.chatService.getAllMessages(groupId, req!.user.sub);
+
+    const messages = await this.chatService.getAllMessages(
+      groupId,
+      req!.user.sub,
+    );
+
+    return this.hydrateMessageMediaUrls(messages);
   }
 
   @Post('messages/:messageId/retranslate')
@@ -126,15 +146,12 @@ export class ChatController {
           userDictionary,
         });
       } else if (message.contentType === MessageContentType.AUDIO) {
-        // rawContent is the saved audio file URL; derive the local path
-        const fileName = message.rawContent.split('/').pop()!;
-        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
-        const audioBase64 = await fs.promises.readFile(localFilePath, {
-          encoding: 'base64',
-        });
+        const mediaRef = this.resolveStoredMediaReference(message.rawContent);
+        const mediaBuffer = await this.loadMediaBuffer(mediaRef);
+        const audioBase64 = mediaBuffer.toString('base64');
 
         // Keep retry MIME behavior aligned with AudioController.
-        const ext = fileName.split('.').pop()?.toLowerCase() ?? 'm4a';
+        const ext = mediaRef.fileName.split('.').pop()?.toLowerCase() ?? 'm4a';
         const audioMimeType =
           ext === 'm4a'
             ? 'audio/mp4'
@@ -158,10 +175,9 @@ export class ChatController {
             originalTone: result.originalTone,
           });
       } else {
-        // IMAGE / DOCUMENT: rawContent is the URL, derive local path
-        const fileName = message.rawContent.split('/').pop()!;
-        const localFilePath = path.join(process.cwd(), 'uploads', fileName);
-        const ext = fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
+        const mediaRef = this.resolveStoredMediaReference(message.rawContent);
+        const mediaBuffer = await this.loadMediaBuffer(mediaRef);
+        const ext = mediaRef.fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
         const fileMimeType =
           ext === 'pdf'
             ? 'application/pdf'
@@ -171,8 +187,8 @@ export class ChatController {
                 ? 'image/gif'
                 : 'image/jpeg';
         result = await this.translationService.translateIntent({
-          localFilePath,
-          fileMimeType,
+          mediaBase64: mediaBuffer.toString('base64'),
+          mediaMimeType: fileMimeType,
           rawText: message.transcription ?? undefined,
           chatHistory: [],
           userDictionary,
@@ -193,13 +209,159 @@ export class ChatController {
       confidenceScore: result.confidenceScore,
     });
 
+    const signedTranslatedAudioUrls =
+      await this.signTranslatedAudioUrls(translatedAudioUrls);
+
     return {
       translations: result.translations,
       confidenceScore: result.confidenceScore,
       detectedLanguage: result.detectedLanguage,
       originalTone: result.originalTone,
+      translatedAudioUrls: signedTranslatedAudioUrls,
+    };
+  }
+
+  private async hydrateMessageMediaUrls(
+    messages: Message[],
+  ): Promise<Message[]> {
+    return Promise.all(
+      messages.map((message) => this.hydrateSingleMessageMediaUrls(message)),
+    );
+  }
+
+  private async hydrateSingleMessageMediaUrls(
+    message: Message,
+  ): Promise<Message> {
+    const isMediaMessage =
+      message.contentType === MessageContentType.AUDIO ||
+      message.contentType === MessageContentType.IMAGE ||
+      message.contentType === MessageContentType.DOCUMENT;
+
+    const rawContent = isMediaMessage
+      ? await this.signRawMediaContent(message.rawContent)
+      : message.rawContent;
+
+    const translatedAudioUrls = await this.signTranslatedAudioUrls(
+      message.translatedAudioUrls,
+    );
+
+    return {
+      ...message,
+      rawContent,
       translatedAudioUrls,
     };
+  }
+
+  private async signRawMediaContent(rawContent: string): Promise<string> {
+    const trimmed = rawContent.trim();
+    if (!trimmed) {
+      return rawContent;
+    }
+
+    if (!trimmed.startsWith('{')) {
+      return this.createSignedReadUrl(trimmed);
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const rawUrl =
+        typeof parsed.url === 'string' && parsed.url.trim().length > 0
+          ? parsed.url.trim()
+          : null;
+
+      if (!rawUrl) {
+        return rawContent;
+      }
+
+      const signedUrl = await this.createSignedReadUrl(rawUrl);
+
+      return JSON.stringify({
+        ...parsed,
+        url: signedUrl,
+      });
+    } catch {
+      return this.createSignedReadUrl(trimmed);
+    }
+  }
+
+  private async createSignedReadUrl(fileUrlOrKey: string): Promise<string> {
+    const signer = this.s3StorageService as unknown as SignedReadUrlCreator;
+    return signer.createSignedReadUrl(fileUrlOrKey);
+  }
+
+  private async signTranslatedAudioUrls(
+    urls: TranslatedAudioUrls | null | undefined,
+  ): Promise<TranslatedAudioUrls | null> {
+    if (!urls) {
+      return null;
+    }
+
+    const signed: TranslatedAudioUrls = {};
+
+    if (urls.english) {
+      signed.english = await this.createSignedReadUrl(urls.english);
+    }
+    if (urls.singlish) {
+      signed.singlish = await this.createSignedReadUrl(urls.singlish);
+    }
+    if (urls.tanglish) {
+      signed.tanglish = await this.createSignedReadUrl(urls.tanglish);
+    }
+
+    return Object.keys(signed).length > 0 ? signed : null;
+  }
+
+  private resolveStoredMediaReference(
+    rawContent: string,
+  ): StoredMediaReference {
+    const trimmed = rawContent.trim();
+    let fileUrl = trimmed;
+
+    try {
+      const parsed = JSON.parse(trimmed) as { url?: unknown };
+      if (typeof parsed.url === 'string' && parsed.url.trim()) {
+        fileUrl = parsed.url.trim();
+      }
+    } catch {
+      // Older messages store the URL directly as raw text.
+    }
+
+    let fileName = '';
+
+    try {
+      const parsedUrl = new URL(fileUrl);
+      fileName = path.basename(parsedUrl.pathname);
+    } catch {
+      fileName = path.basename(fileUrl.split('?')[0].split('#')[0]);
+    }
+
+    const normalizedFileName = decodeURIComponent(fileName || '').trim();
+    if (!normalizedFileName) {
+      throw new NotFoundException('Stored media reference is invalid');
+    }
+
+    return {
+      fileUrl,
+      fileName: normalizedFileName,
+    };
+  }
+
+  private async loadMediaBuffer(
+    mediaRef: StoredMediaReference,
+  ): Promise<Buffer> {
+    try {
+      return await this.s3StorageService.downloadBufferFromUrl(
+        mediaRef.fileUrl,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `[retranslateMessage] Media fetch failed for ${mediaRef.fileUrl}: ${String(error)}`,
+      );
+
+      throw new NotFoundException(
+        'Original media file is no longer available for re-translation. Please resend the message.',
+      );
+    }
   }
 
   @Get('groups/:groupId/search')

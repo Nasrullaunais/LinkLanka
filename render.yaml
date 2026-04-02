@@ -18,16 +18,28 @@ services:
       - key: GEMINI_TRANSLATION_MODEL
         value: gemini-3-flash-preview
       - key: GEMINI_TRANSLATION_FALLBACK_MODEL
-        value: ""
+        value: gemini-2.5-flash
       - key: TRANSLATION_MODEL_MAX_RETRIES
         value: "1"
       - key: TRANSLATION_TIMEOUT_MS_TEXT
-        value: "20000"
+        value: "30000"
       - key: TRANSLATION_TIMEOUT_MS_MEDIA
         value: "60000"
       - key: JWT_SECRET
         generateValue: true
       - key: GEMINI_API_KEY
+        sync: false
+      - key: AWS_S3_BUCKET
+        value: amzn-leo-bucket
+      - key: AWS_S3_REGION
+        value: ap-south-1
+      - key: AWS_S3_PREFIX
+        value: linklanka/
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
         sync: false
       - key: DATABASE_URL
         sync: false

@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Get,
   Param,
@@ -13,7 +14,6 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { JwtAuthGuard } from '../../core/identity/guards/jwt-auth.guard';
@@ -21,6 +21,7 @@ import {
   profilePictureUploadOptions,
   MIME_TO_EXT,
 } from '../../core/common/upload';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 import { GroupsService, type UpdateProfileDto } from './groups.service';
 
 interface AuthRequest {
@@ -30,7 +31,10 @@ interface AuthRequest {
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private readonly groupsService: GroupsService) {}
+  constructor(
+    private readonly groupsService: GroupsService,
+    private readonly s3StorageService: S3StorageService,
+  ) {}
 
   /**
    * GET /users/me — returns the authenticated user's full profile.
@@ -52,25 +56,26 @@ export class UsersController {
    * The client (React Native) compresses the image before sending.
    */
   @Post('me/profile-picture')
-  @UseInterceptors(
-    FileInterceptor(
-      'file',
-      profilePictureUploadOptions('./uploads/profile-pictures'),
-    ),
-  )
+  @UseInterceptors(FileInterceptor('file', profilePictureUploadOptions()))
   async uploadProfilePicture(
     @Request() req: AuthRequest,
     @UploadedFile() file: Express.Multer.File,
   ) {
+    if (!file?.buffer) {
+      throw new BadRequestException('Uploaded file buffer is missing');
+    }
+
     // Derive extension from the validated MIME type — never trust originalname.
     const ext = MIME_TO_EXT[file.mimetype] ?? path.extname(file.originalname);
     const newFileName = `${crypto.randomUUID()}${ext}`;
-    const newPath = path.join('./uploads/profile-pictures', newFileName);
 
-    await fs.promises.rename(file.path, newPath);
-
-    const baseUrl = process.env.BASE_URL ?? 'http://localhost:3000';
-    const url = `${baseUrl}/uploads/profile-pictures/${newFileName}`;
+    const uploaded = await this.s3StorageService.uploadBuffer({
+      buffer: file.buffer,
+      fileName: newFileName,
+      mimeType: file.mimetype,
+      folder: 'profile-pictures',
+    });
+    const url = uploaded.url;
 
     // Persist the URL on the user record
     await this.groupsService.updateUserProfile(req.user.sub, {

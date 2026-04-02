@@ -24,10 +24,20 @@ export class User {
   @Column({ type: 'varchar', name: 'native_dialect', nullable: false })
   nativeDialect!: string;
 
-  @Column({ type: 'varchar', name: 'profile_picture_url', nullable: true, default: null })
+  @Column({
+    type: 'varchar',
+    name: 'profile_picture_url',
+    nullable: true,
+    default: null,
+  })
   profilePictureUrl!: string | null;
 
-  @Column({ type: 'varchar', name: 'expo_push_token', nullable: true, default: null })
+  @Column({
+    type: 'varchar',
+    name: 'expo_push_token',
+    nullable: true,
+    default: null,
+  })
   expoPushToken!: string | null;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })

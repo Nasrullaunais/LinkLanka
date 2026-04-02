@@ -1,4 +1,7 @@
-export { mediaUploadOptions, profilePictureUploadOptions } from './multer-config';
+export {
+  mediaUploadOptions,
+  profilePictureUploadOptions,
+} from './multer-config';
 export {
   ALLOWED_MEDIA_MIMES,
   ALLOWED_PROFILE_PICTURE_MIMES,

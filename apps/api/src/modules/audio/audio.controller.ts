@@ -1,5 +1,3 @@
-import * as path from 'path';
-
 import {
   BadRequestException,
   Body,
@@ -26,10 +24,12 @@ import {
   ExtractedAction,
   TranslatedAudioUrls,
 } from '../translation/translation.service';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 /** What the mobile client POSTs to /audio/process */
 interface ProcessAudioDto {
   groupId: unknown;
+  clientTempId?: string;
   audioBase64: unknown;
   audioMimeType?: unknown;
   /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
@@ -42,10 +42,15 @@ interface ProcessAudioDto {
 interface ProcessAudioResult {
   success: true;
   messageId: string;
+  rawContent: string;
 }
 
 interface AuthRequest {
   user: { sub: string; email: string };
+}
+
+interface SignedReadUrlCreator {
+  createSignedReadUrl(fileUrlOrKey: string): Promise<string>;
 }
 
 /**
@@ -71,6 +76,7 @@ export class AudioController {
     private readonly personalContextService: PersonalContextService,
     private readonly translationService: TranslationService,
     private readonly actionService: ActionService,
+    private readonly s3StorageService: S3StorageService,
   ) {}
 
   /**
@@ -79,7 +85,7 @@ export class AudioController {
    * Two-phase pipeline:
    *   Phase 1 (synchronous — returned to caller):
    *     1. Validate payload & group membership.
-   *     2. Save base64 audio buffer to disk.
+   *     2. Save base64 audio buffer to S3.
    *     3. Persist the raw message to the database (no transcription yet).
    *     4. Broadcast `newMessage` to the Socket.IO room (with translations: null).
    *     5. Return { success, messageId } immediately.
@@ -110,6 +116,14 @@ export class AudioController {
         'audioBase64 is required and must be a non-empty string',
       );
     }
+    if (
+      body.clientTempId !== undefined &&
+      (typeof body.clientTempId !== 'string' || !body.clientTempId.trim())
+    ) {
+      throw new BadRequestException(
+        'clientTempId must be a non-empty string when provided',
+      );
+    }
 
     const groupId = body.groupId.trim();
     const audioBase64 = body.audioBase64.trim();
@@ -124,7 +138,7 @@ export class AudioController {
       throw new BadRequestException('You are not a member of this group');
     }
 
-    // ── 3. Persist audio to disk ──────────────────────────────────────────
+    // ── 3. Persist audio to S3 ────────────────────────────────────────────
     this.logger.log(
       `[processAudio] Saving audio for userId=${userId} groupId=${groupId}`,
     );
@@ -139,6 +153,7 @@ export class AudioController {
       typeof body.durationMs === 'number' ? body.durationMs : 0;
     const rawContent =
       durationMs > 0 ? JSON.stringify({ url: fileUrl, durationMs }) : fileUrl;
+    const signedRawContent = await this.signRawMediaContent(rawContent);
 
     const message = await this.chatService.saveMessage(
       userId,
@@ -156,8 +171,12 @@ export class AudioController {
     );
 
     // ── 5. Broadcast raw message immediately ──────────────────────────────
-    this.chatGateway.broadcastNewMessage(groupId, {
+    await this.chatGateway.broadcastNewMessage(groupId, {
       messageId: message.id,
+      clientTempId:
+        typeof body.clientTempId === 'string' && body.clientTempId.trim()
+          ? body.clientTempId.trim()
+          : undefined,
       senderId: userId,
       contentType: MessageContentType.AUDIO,
       fileUrl: rawContent, // We send the JSON text or url so clients parsing it works
@@ -178,8 +197,8 @@ export class AudioController {
       message.id,
       userId,
       groupId,
-      fileUrl,
       rawMime,
+      audioBase64,
       timezone,
     ).catch((err) =>
       this.logger.error(
@@ -191,6 +210,7 @@ export class AudioController {
     return {
       success: true,
       messageId: message.id,
+      rawContent: signedRawContent,
     };
   }
 
@@ -202,8 +222,8 @@ export class AudioController {
     messageId: string,
     userId: string,
     groupId: string,
-    fileUrl: string,
     rawMime: string,
+    audioBase64: string,
     timezone?: string,
   ): Promise<void> {
     const phase2StartedAt = Date.now();
@@ -215,8 +235,6 @@ export class AudioController {
     try {
       // Gemini only accepts 'audio/mp4' for AAC / M4A content.
       const geminiMime = rawMime === 'audio/m4a' ? 'audio/mp4' : rawMime;
-      const savedFileName = fileUrl.split('/').pop()!;
-      const localFilePath = path.join(process.cwd(), 'uploads', savedFileName);
 
       // ── Fetch user personalization dictionary ───────────────────────────
       const userDictionary =
@@ -228,8 +246,8 @@ export class AudioController {
       );
 
       const result = await this.translationService.translateIntent({
-        localFilePath,
-        fileMimeType: geminiMime,
+        audioBase64,
+        audioMimeType: geminiMime,
         chatHistory: [],
         userDictionary,
         timezone,
@@ -268,7 +286,7 @@ export class AudioController {
           extractedActions: null,
         });
 
-        this.chatGateway.broadcastTranslationUpdate(
+        await this.chatGateway.broadcastTranslationUpdate(
           groupId,
           userId,
           {
@@ -341,7 +359,7 @@ export class AudioController {
       );
 
       // ── Broadcast translation update ────────────────────────────────────
-      this.chatGateway.broadcastTranslationUpdate(
+      await this.chatGateway.broadcastTranslationUpdate(
         groupId,
         userId,
         {
@@ -366,5 +384,42 @@ export class AudioController {
       );
       throw error;
     }
+  }
+
+  private async signRawMediaContent(rawContent: string): Promise<string> {
+    const trimmed = rawContent.trim();
+    if (!trimmed) {
+      return rawContent;
+    }
+
+    if (!trimmed.startsWith('{')) {
+      return this.createSignedReadUrl(trimmed);
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const rawUrl =
+        typeof parsed.url === 'string' && parsed.url.trim().length > 0
+          ? parsed.url.trim()
+          : null;
+
+      if (!rawUrl) {
+        return rawContent;
+      }
+
+      const signedUrl = await this.createSignedReadUrl(rawUrl);
+
+      return JSON.stringify({
+        ...parsed,
+        url: signedUrl,
+      });
+    } catch {
+      return this.createSignedReadUrl(trimmed);
+    }
+  }
+
+  private async createSignedReadUrl(fileUrlOrKey: string): Promise<string> {
+    const signer = this.s3StorageService as unknown as SignedReadUrlCreator;
+    return signer.createSignedReadUrl(fileUrlOrKey);
   }
 }

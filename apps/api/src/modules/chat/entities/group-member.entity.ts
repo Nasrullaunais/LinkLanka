@@ -45,7 +45,12 @@ export class GroupMember {
    * Per-conversation language preference.
    * When null, falls back to the user's nativeDialect.
    */
-  @Column({ type: 'varchar', name: 'preferred_language', nullable: true, default: null })
+  @Column({
+    type: 'varchar',
+    name: 'preferred_language',
+    nullable: true,
+    default: null,
+  })
   preferredLanguage!: string | null;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'joined_at' })

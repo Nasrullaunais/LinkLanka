@@ -9,11 +9,13 @@ import { GroupsController } from './groups.controller';
 import { UsersController } from './users.controller';
 import { GroupsService } from './groups.service';
 import { NotificationModule } from '../notification/notification.module';
+import { StorageModule } from '../../core/common/storage';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([ChatGroup, GroupMember, Message, User]),
     NotificationModule,
+    StorageModule,
   ],
   controllers: [GroupsController, UsersController],
   providers: [GroupsService],

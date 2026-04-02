@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 
 import {
@@ -18,6 +17,7 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { z } from 'zod';
 
 import { Message, MessageContentType } from '../chat/entities/message.entity';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 // ── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -61,6 +61,7 @@ export class DocumentAiService {
     @InjectRepository(Message)
     private readonly messageRepo: Repository<Message>,
     private readonly configService: ConfigService,
+    private readonly s3StorageService: S3StorageService,
   ) {
     this.model = new ChatGoogleGenerativeAI({
       apiKey: this.configService.getOrThrow<string>('GEMINI_API_KEY'),
@@ -83,15 +84,33 @@ export class DocumentAiService {
     return message;
   }
 
-  /** Resolve the server file URL stored in rawContent to a local disk path. */
-  private resolveLocalPath(fileUrl: string): string {
-    const fileName = fileUrl.split('/').pop()!;
-    return path.join(process.cwd(), 'uploads', fileName);
+  /** Resolve the stored message raw content to a document URL. */
+  private resolveDocumentUrl(rawContent: string): string {
+    const trimmed = rawContent.trim();
+
+    try {
+      const parsed = JSON.parse(trimmed) as { url?: unknown };
+      if (typeof parsed.url === 'string' && parsed.url.trim()) {
+        return parsed.url.trim();
+      }
+    } catch {
+      // Document messages are usually stored as plain URL strings.
+    }
+
+    return trimmed;
   }
 
   /** Guess the MIME type from the file extension. */
-  private guessMime(filePath: string): string {
-    const ext = path.extname(filePath).toLowerCase();
+  private guessMime(fileReference: string): string {
+    let extSource = fileReference;
+
+    try {
+      extSource = new URL(fileReference).pathname;
+    } catch {
+      // Keep raw string for non-URL references.
+    }
+
+    const ext = path.extname(extSource).toLowerCase();
     const map: Record<string, string> = {
       '.pdf': 'application/pdf',
       '.png': 'image/png',
@@ -160,13 +179,13 @@ Each bullet should capture a distinct key point — avoid redundancy. Keep each 
   ): Promise<QAResponse> {
     const message = await this.getDocumentMessage(messageId);
 
-    const localPath = this.resolveLocalPath(message.rawContent);
+    const documentUrl = this.resolveDocumentUrl(message.rawContent);
+    const fileBuffer =
+      await this.s3StorageService.downloadBufferFromUrl(documentUrl);
 
     // Read the file as base64 to send as multipart media to Gemini
-    const base64String = await fs.promises.readFile(localPath, {
-      encoding: 'base64',
-    });
-    const mimeType = this.guessMime(localPath);
+    const base64String = fileBuffer.toString('base64');
+    const mimeType = this.guessMime(documentUrl);
 
     const structuredModel = this.model.withStructuredOutput(QAResponseSchema);
 

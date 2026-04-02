@@ -20,6 +20,34 @@ import { getApiErrorMessage, isValidEmail, normalizeEmail } from '../utils/auth'
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
+type LoginRequestError = {
+  message?: string;
+  code?: string;
+  response?: {
+    status?: number;
+    data?: {
+      message?: unknown;
+    };
+  };
+};
+
+function isInvalidCredentialError(err: LoginRequestError): boolean {
+  if (err.response?.status !== 401) return false;
+
+  const apiMessage = err.response?.data?.message;
+  if (Array.isArray(apiMessage)) {
+    return apiMessage.some(
+      (item) => typeof item === 'string' && /invalid credentials/i.test(item),
+    );
+  }
+
+  if (typeof apiMessage === 'string') {
+    return /invalid credentials/i.test(apiMessage);
+  }
+
+  return true;
+}
+
 export default function LoginScreen({ navigation }: Props) {
   const { login } = useAuth();
   const { colors } = useTheme();
@@ -57,21 +85,18 @@ export default function LoginScreen({ navigation }: Props) {
 
       await login(access_token);
     } catch (error: unknown) {
-      // Log the full error so network-level failures are visible in the console
-      const err = error as {
-        message?: string;
-        code?: string;
-        response?: {
-          status?: number;
-          data?: unknown;
-        };
-      };
-      console.error('[LoginScreen] handleLogin error:', {
-        message: err?.message,
-        code: err?.code,
-        status: err?.response?.status,
-        data: err?.response?.data,
-      });
+      const err = error as LoginRequestError;
+      const isExpectedInvalidCredentials = isInvalidCredentialError(err);
+
+      if (!isExpectedInvalidCredentials) {
+        // Keep error-level logging for actual failures (network/server issues).
+        console.error('[LoginScreen] handleLogin error:', {
+          message: err?.message,
+          code: err?.code,
+          status: err?.response?.status,
+          data: err?.response?.data,
+        });
+      }
 
       const message = getApiErrorMessage(
         error,

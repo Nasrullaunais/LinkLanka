@@ -23,6 +23,7 @@ import {
   type QAChatTurn,
   type QACitation,
 } from '../../services/api';
+import { getCachedMediaUri } from '../../services/mediaCache';
 import { useTheme } from '../../contexts/ThemeContext';
 
 // PDF panel occupies ~42 % of the screen; the chat panel takes the rest and
@@ -150,6 +151,9 @@ export default function DocumentInterrogationModal({
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [pdfError, setPdfError] = useState(false);
+  const [resolvedFileUrl, setResolvedFileUrl] = useState(() =>
+    normalizeFileUrl(fileUrl),
+  );
   const { colors } = useTheme();
 
   // ── Reset state when modal opens ───────────────────────────────────────
@@ -180,6 +184,26 @@ export default function DocumentInterrogationModal({
       hideSub.remove();
     };
   }, [visible]);
+
+  useEffect(() => {
+    const normalized = normalizeFileUrl(fileUrl);
+    setResolvedFileUrl(normalized);
+
+    if (!visible) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const cached = await getCachedMediaUri(normalized, 'document');
+      if (!cancelled) {
+        setResolvedFileUrl(cached);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileUrl, visible]);
 
   // ── Persist / Restore Q&A history ──────────────────────────────────────
   useEffect(() => {
@@ -354,7 +378,6 @@ export default function DocumentInterrogationModal({
     [goToPage, colors],
   );
 
-  const resolvedFileUrl = normalizeFileUrl(fileUrl);
   const filename = extractFilename(resolvedFileUrl);
 
   return (

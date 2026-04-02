@@ -1,5 +1,3 @@
-import * as fs from 'fs';
-
 import { ConfigService } from '@nestjs/config';
 
 import {
@@ -7,6 +5,7 @@ import {
   type SupportedLanguage,
   type Translations,
 } from './translation.service';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 const mockInvoke = jest.fn();
 const mockWithStructuredOutput = jest.fn(() => ({
@@ -26,24 +25,23 @@ describe('TranslationService.generateTranslatedAudioFiles', () => {
     tanglish: 'Machan epdi iruka',
   };
 
-  let mkdirSpy: jest.SpiedFunction<typeof fs.promises.mkdir>;
-  let writeFileSpy: jest.SpiedFunction<typeof fs.promises.writeFile>;
+  let uploadBufferMock: jest.Mock;
 
   beforeEach(() => {
     mockInvoke.mockReset();
     mockWithStructuredOutput.mockClear();
 
-    mkdirSpy = jest
-      .spyOn(fs.promises, 'mkdir')
-      .mockResolvedValue(undefined as unknown as string);
-    writeFileSpy = jest
-      .spyOn(fs.promises, 'writeFile')
-      .mockResolvedValue(undefined);
+    uploadBufferMock = jest
+      .fn()
+      .mockImplementation(
+        ({ fileName }: { fileName: string }): { key: string; url: string } => ({
+          key: `linklanka/tts/${fileName}`,
+          url: `https://amzn-leo-bucket.s3.amazonaws.com/linklanka/tts/${fileName}`,
+        }),
+      );
   });
 
   afterEach(() => {
-    mkdirSpy.mockRestore();
-    writeFileSpy.mockRestore();
     jest.restoreAllMocks();
   });
 
@@ -57,7 +55,11 @@ describe('TranslationService.generateTranslatedAudioFiles', () => {
       }),
     } as unknown as ConfigService;
 
-    return new TranslationService(configService);
+    const s3StorageService = {
+      uploadBuffer: uploadBufferMock,
+    } as unknown as S3StorageService;
+
+    return new TranslationService(configService, s3StorageService);
   }
 
   it('keeps partial successes when one language generation fails', async () => {
@@ -85,10 +87,14 @@ describe('TranslationService.generateTranslatedAudioFiles', () => {
 
     expect(generateSpeechSpy).toHaveBeenCalledTimes(3);
     expect(Object.keys(output).sort()).toEqual(['english', 'singlish']);
-    expect(output.english).toContain('/uploads/tts-english-');
-    expect(output.singlish).toContain('/uploads/tts-singlish-');
+    expect(output.english).toContain(
+      'https://amzn-leo-bucket.s3.amazonaws.com/linklanka/tts/tts-english-',
+    );
+    expect(output.singlish).toContain(
+      'https://amzn-leo-bucket.s3.amazonaws.com/linklanka/tts/tts-singlish-',
+    );
     expect(output.tanglish).toBeUndefined();
-    expect(writeFileSpy).toHaveBeenCalledTimes(2);
+    expect(uploadBufferMock).toHaveBeenCalledTimes(2);
   });
 
   it('honors TTS_MAX_CONCURRENCY cap while processing jobs', async () => {

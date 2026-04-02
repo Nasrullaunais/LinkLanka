@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
-import { join } from 'path';
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +11,8 @@ import {
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import axios from 'axios';
 import { z } from 'zod';
+
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 const EVENT_TIMEZONE = 'Asia/Colombo';
 
@@ -115,6 +116,8 @@ interface TranslateIntentPayload {
   rawText?: string;
   audioBase64?: string;
   audioMimeType?: string;
+  mediaBase64?: string;
+  mediaMimeType?: string;
   localFilePath?: string;
   fileMimeType?: string;
   nativeDialect?: string;
@@ -137,10 +140,12 @@ export class TranslationService {
   private readonly translationModelMaxRetries: number;
   private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
   private readonly geminiApiKey: string;
-  private readonly uploadsDir = join(process.cwd(), 'uploads');
   private readonly ttsMaxConcurrency: number;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly s3StorageService: S3StorageService,
+  ) {
     this.geminiApiKey = this.configService.getOrThrow<string>('GEMINI_API_KEY');
     this.ttsMaxConcurrency = this.resolveTtsMaxConcurrency(
       this.configService.get<string>('TTS_MAX_CONCURRENCY'),
@@ -149,7 +154,7 @@ export class TranslationService {
       this.configService.get<string>('TRANSLATION_TIMEOUT_MS_TEXT') ??
         this.configService.get<string>('TRANSLATION_TIMEOUT_MS'),
       {
-        defaultValue: 20_000,
+        defaultValue: 40_000,
         min: 5_000,
         max: 45_000,
       },
@@ -173,9 +178,10 @@ export class TranslationService {
 
     const fallbackModelName = this.resolveTranslationModelName(
       this.configService.get<string>('GEMINI_TRANSLATION_FALLBACK_MODEL'),
-      '',
+      'gemini-2.5-flash',
     );
-    this.fallbackModelName = fallbackModelName || null;
+    this.fallbackModelName =
+      fallbackModelName === this.primaryModelName ? null : fallbackModelName;
 
     this.model = this.createTranslationModel(this.primaryModelName);
     this.fallbackModel = this.fallbackModelName
@@ -253,6 +259,12 @@ Examples of messages WITHOUT actions:
           : payload.audioBase64
         ).replace(/\s/g, '')
       : undefined;
+    const cleanMediaBase64: string | undefined = payload.mediaBase64
+      ? (payload.mediaBase64.includes(',')
+          ? payload.mediaBase64.split(',')[1]
+          : payload.mediaBase64
+        ).replace(/\s/g, '')
+      : undefined;
 
     let finalHumanMessage: HumanMessage;
 
@@ -296,6 +308,23 @@ Examples of messages WITHOUT actions:
             type: 'media',
             mimeType: payload.audioMimeType || 'audio/webm',
             data: cleanAudioBase64,
+          },
+        ],
+      });
+    } else if (cleanMediaBase64) {
+      finalHumanMessage = new HumanMessage({
+        content: [
+          {
+            type: 'text',
+            text:
+              'Read this media. If it is an image/document, extract the text (OCR). Then translate the intent.' +
+              (payload.rawText ? ' User context: ' + payload.rawText : ''),
+          },
+          {
+            type: 'media',
+            mimeType:
+              payload.mediaMimeType || payload.fileMimeType || 'image/jpeg',
+            data: cleanMediaBase64,
           },
         ],
       });
@@ -401,7 +430,7 @@ Examples of messages WITHOUT actions:
   private getInputType(
     payload: TranslateIntentPayload,
   ): 'text' | 'audio' | 'media' {
-    if (payload.localFilePath) {
+    if (payload.localFilePath || payload.mediaBase64) {
       return 'media';
     }
 
@@ -475,8 +504,6 @@ Examples of messages WITHOUT actions:
       return {};
     }
 
-    await fs.promises.mkdir(this.uploadsDir, { recursive: true });
-
     const startedAt = Date.now();
     const concurrency = Math.min(this.ttsMaxConcurrency, jobs.length);
 
@@ -502,11 +529,13 @@ Examples of messages WITHOUT actions:
           });
 
           const fileName = `tts-${job.language}-${randomUUID()}.wav`;
-          await fs.promises.writeFile(
-            join(this.uploadsDir, fileName),
-            wavAudio,
-          );
-          output[job.language] = `${this.getBaseUrl()}/uploads/${fileName}`;
+          const uploaded = await this.s3StorageService.uploadBuffer({
+            buffer: wavAudio,
+            fileName,
+            mimeType: 'audio/wav',
+            folder: 'tts',
+          });
+          output[job.language] = uploaded.url;
           successCount += 1;
 
           this.logger.log(
@@ -672,11 +701,6 @@ Examples of messages WITHOUT actions:
       '#### TRANSCRIPT',
       params.transcript,
     ].join('\n');
-  }
-
-  private getBaseUrl(): string {
-    const baseUrl = this.configService.get<string>('BASE_URL');
-    return (baseUrl && baseUrl.trim()) || 'http://localhost:3000';
   }
 
   private pcm16ToWav(

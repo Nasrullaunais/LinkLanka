@@ -17,13 +17,11 @@ export class WsAllExceptionsFilter extends BaseWsExceptionFilter {
       errorMessage =
         typeof wsError === 'string'
           ? wsError
-          : (wsError as Record<string, unknown>)?.message?.toString() ??
-            'WebSocket error';
+          : ((wsError as Record<string, unknown>)?.message?.toString() ??
+            'WebSocket error');
       errorStatus = 'BAD_REQUEST';
 
-      this.logger.warn(
-        `WS error [${client.id}]: ${errorMessage}`,
-      );
+      this.logger.warn(`WS error [${client.id}]: ${errorMessage}`);
     } else if (exception instanceof Error) {
       errorMessage = 'Internal server error';
       errorStatus = 'INTERNAL_ERROR';
