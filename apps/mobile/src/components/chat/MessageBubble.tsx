@@ -977,6 +977,7 @@ function MessageBubble({
             messageId={message.id}
             fileUrl={rawContent}
             isOwn={isOwn}
+            isPendingUpload={Boolean(message.isOptimistic)}
             onOpenInterrogation={() =>
               onOpenDocumentInterrogation?.(message.id, rawContent)
             }

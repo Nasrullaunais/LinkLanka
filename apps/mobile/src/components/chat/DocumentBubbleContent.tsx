@@ -15,6 +15,7 @@ interface DocumentBubbleContentProps {
   messageId: string;
   fileUrl: string;
   isOwn: boolean;
+  isPendingUpload?: boolean;
   /** Called when the user taps the document card body (opens interrogation modal). */
   onOpenInterrogation: () => void;
   /** Called when the user taps a summary bullet with a page number. */
@@ -50,6 +51,7 @@ export default memo(function DocumentBubbleContent({
   messageId,
   fileUrl,
   isOwn,
+  isPendingUpload = false,
   onOpenInterrogation,
   onOpenInterrogationAtPage,
 }: DocumentBubbleContentProps) {
@@ -61,8 +63,14 @@ export default memo(function DocumentBubbleContent({
 
   const filename = extractFilename(fileUrl);
   const typeLabel = getFileTypeLabel(fileUrl);
+  const isLocalFileUri = fileUrl.trim().startsWith('file://');
+  const interrogationReady = !isPendingUpload && !isLocalFileUri;
 
   const handleAiPeek = useCallback(async () => {
+    if (!interrogationReady) {
+      return;
+    }
+
     // If already expanded, just toggle collapse
     if (isExpanded && bullets) {
       setIsExpanded(false);
@@ -88,7 +96,7 @@ export default memo(function DocumentBubbleContent({
     } finally {
       setIsLoading(false);
     }
-  }, [messageId, bullets, isExpanded]);
+  }, [messageId, bullets, isExpanded, interrogationReady]);
 
   const handleBulletPress = useCallback(
     (bullet: SummaryBullet) => {
@@ -109,7 +117,8 @@ export default memo(function DocumentBubbleContent({
     <Animated.View style={styles.container} layout={LinearTransition.duration(250)}>
       {/* ── Document card: tappable to open interrogation ── */}
       <Pressable
-        onPress={onOpenInterrogation}
+        onPress={interrogationReady ? onOpenInterrogation : undefined}
+        disabled={!interrogationReady}
         style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
       >
         <View style={[styles.iconBadge, {
@@ -122,6 +131,11 @@ export default memo(function DocumentBubbleContent({
             {filename}
           </Text>
           <Text style={[styles.typeLabel, { color: isOwn ? 'rgba(255,255,255,0.7)' : colors.textSecondary }]}>{typeLabel}</Text>
+          {!interrogationReady && (
+            <Text style={[styles.pendingText, { color: isOwn ? 'rgba(255,255,255,0.8)' : colors.textSecondary }]}>
+              Available after upload finishes
+            </Text>
+          )}
         </View>
         <Ionicons
           name="chevron-forward"
@@ -133,15 +147,21 @@ export default memo(function DocumentBubbleContent({
       {/* ── AI Peek button ── */}
       <Pressable
         onPress={handleAiPeek}
-        disabled={isLoading}
+        disabled={isLoading || !interrogationReady}
         style={({ pressed }) => [
           styles.peekBtn,
           { backgroundColor: peekBg },
+          !interrogationReady && styles.peekBtnDisabled,
           pressed && styles.peekBtnPressed,
         ]}
       >
         {isLoading ? (
           <ActivityIndicator size="small" color={colors.primary} />
+        ) : !interrogationReady ? (
+          <>
+            <Ionicons name="cloud-upload-outline" size={14} color={isOwn ? '#fff' : colors.primary} />
+            <Text style={[styles.peekBtnText, { color: isOwn ? '#fff' : colors.primary }]}>Uploading document…</Text>
+          </>
         ) : (
           <>
             <Text style={styles.peekBtnIcon}>✨</Text>
@@ -221,6 +241,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
+  pendingText: {
+    fontSize: 11,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
   peekBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -231,6 +256,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderRadius: 20,
     gap: 4,
+  },
+  peekBtnDisabled: {
+    opacity: 0.75,
   },
   peekBtnPressed: {
     opacity: 0.7,

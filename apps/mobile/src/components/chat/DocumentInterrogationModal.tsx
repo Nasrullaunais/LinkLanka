@@ -16,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { File } from 'expo-file-system';
 import WebView from 'react-native-webview';
 import {
   askDocumentQuestion,
@@ -74,6 +75,28 @@ function extractOrigin(url: string): string {
   // e.g. "http://192.168.1.5:3000/media/uploads/doc.pdf" → "http://192.168.1.5:3000"
   const match = url.match(/^(https?:\/\/[^/]+)/);
   return match ? match[1] : '';
+}
+
+function isFileUri(url: string): boolean {
+  return /^file:\/\//i.test(url.trim());
+}
+
+function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url.trim());
+}
+
+async function hasReadableLocalFile(fileUri: string): Promise<boolean> {
+  try {
+    const file = new File(fileUri);
+    if (!file.exists) {
+      return false;
+    }
+
+    const info = file.info();
+    return info.exists && (info.size ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -151,15 +174,18 @@ export default function DocumentInterrogationModal({
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [pdfError, setPdfError] = useState(false);
+  const [pdfErrorMessage, setPdfErrorMessage] = useState<string | null>(null);
   const [resolvedFileUrl, setResolvedFileUrl] = useState(() =>
     normalizeFileUrl(fileUrl),
   );
+  const remoteSourceUrlRef = useRef<string | null>(null);
   const { colors } = useTheme();
 
   // ── Reset state when modal opens ───────────────────────────────────────
   useEffect(() => {
     if (visible) {
       setPdfError(false);
+      setPdfErrorMessage(null);
       setCurrentPage(1);
       setTotalPages(0);
       setAndroidKeyboardOffset(0);
@@ -187,7 +213,10 @@ export default function DocumentInterrogationModal({
 
   useEffect(() => {
     const normalized = normalizeFileUrl(fileUrl);
+    remoteSourceUrlRef.current = isHttpUrl(normalized) ? normalized : null;
     setResolvedFileUrl(normalized);
+    setPdfError(false);
+    setPdfErrorMessage(null);
 
     if (!visible) return;
 
@@ -195,9 +224,28 @@ export default function DocumentInterrogationModal({
 
     (async () => {
       const cached = await getCachedMediaUri(normalized, 'document');
-      if (!cancelled) {
-        setResolvedFileUrl(cached);
+      if (cancelled) {
+        return;
       }
+
+      if (isFileUri(cached)) {
+        const readable = await hasReadableLocalFile(cached);
+        if (!readable) {
+          const remoteFallback = remoteSourceUrlRef.current;
+          if (remoteFallback) {
+            setResolvedFileUrl(remoteFallback);
+            return;
+          }
+
+          setPdfError(true);
+          setPdfErrorMessage(
+            'This local document file is no longer available. Please resend the document.',
+          );
+          return;
+        }
+      }
+
+      setResolvedFileUrl(cached);
     })();
 
     return () => {
@@ -309,6 +357,11 @@ export default function DocumentInterrogationModal({
             break;
           case 'error':
             console.error('[DocInterrogation] PDF.js error:', data.msg);
+            setPdfErrorMessage(
+              typeof data.msg === 'string' && data.msg.trim().length > 0
+                ? data.msg
+                : 'Unable to render document preview',
+            );
             setPdfError(true);
             break;
         }
@@ -416,7 +469,7 @@ export default function DocumentInterrogationModal({
             <View style={styles.pdfErrorContainer}>
               <Ionicons name="alert-circle-outline" size={48} color={colors.emptyIcon} />
               <Text style={[styles.pdfErrorText, { color: colors.emptyText }]}>
-                Unable to render document preview
+                {pdfErrorMessage ?? 'Unable to render document preview'}
               </Text>
             </View>
           ) : (

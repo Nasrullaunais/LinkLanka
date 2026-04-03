@@ -60,6 +60,7 @@ bun run android
 ## Windows (PowerShell)
 
 1. Install Bun, then verify tools.
+Make sure you run these commands in windows POWERSHELL.
 
 ```powershell
 powershell -c "irm bun.sh/install.ps1 | iex"
