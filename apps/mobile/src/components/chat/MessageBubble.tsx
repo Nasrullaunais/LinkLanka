@@ -80,7 +80,18 @@ interface MessageBubbleProps {
   /** Called when the user taps the message while in selection mode */
   onPress?: (messageId: string) => void;
   /** Called when the user taps a document bubble to open the interrogation modal */
-  onOpenDocumentInterrogation?: (messageId: string, fileUrl: string, initialPage?: number) => void;
+  onOpenDocumentInterrogation?: (
+    messageId: string,
+    fileUrl: string,
+    initialPage?: number,
+    detectedLanguage?:
+      | 'english'
+      | 'singlish'
+      | 'tanglish'
+      | 'mixed'
+      | 'unknown'
+      | null,
+  ) => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -979,10 +990,20 @@ function MessageBubble({
             isOwn={isOwn}
             isPendingUpload={Boolean(message.isOptimistic)}
             onOpenInterrogation={() =>
-              onOpenDocumentInterrogation?.(message.id, rawContent)
+              onOpenDocumentInterrogation?.(
+                message.id,
+                rawContent,
+                undefined,
+                message.detectedLanguage,
+              )
             }
             onOpenInterrogationAtPage={(page) =>
-              onOpenDocumentInterrogation?.(message.id, rawContent, page)
+              onOpenDocumentInterrogation?.(
+                message.id,
+                rawContent,
+                page,
+                message.detectedLanguage,
+              )
             }
           />
         );
@@ -990,7 +1011,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means

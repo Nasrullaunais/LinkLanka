@@ -51,6 +51,27 @@ export interface QAChatTurn {
   text: string;
 }
 
+export type PreferredQALanguage = 'english' | 'singlish' | 'tanglish';
+
+function resolvePreferredQALanguage(
+  preferredLanguage: PreferredQALanguage | undefined,
+  detectedLanguage: Message['detectedLanguage'],
+): PreferredQALanguage {
+  if (preferredLanguage) {
+    return preferredLanguage;
+  }
+
+  if (
+    detectedLanguage === 'english' ||
+    detectedLanguage === 'singlish' ||
+    detectedLanguage === 'tanglish'
+  ) {
+    return detectedLanguage;
+  }
+
+  return 'english';
+}
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -176,8 +197,13 @@ Each bullet should capture a distinct key point — avoid redundancy. Keep each 
     messageId: string,
     userQuestion: string,
     chatHistory: QAChatTurn[],
+    preferredLanguage?: PreferredQALanguage,
   ): Promise<QAResponse> {
     const message = await this.getDocumentMessage(messageId);
+    const effectiveLanguage = resolvePreferredQALanguage(
+      preferredLanguage,
+      message.detectedLanguage,
+    );
 
     const documentUrl = this.resolveDocumentUrl(message.rawContent);
     const fileBuffer =
@@ -191,6 +217,7 @@ Each bullet should capture a distinct key point — avoid redundancy. Keep each 
 
     const systemMessage = new SystemMessage(
       `You are a document assistant. The user has a document attached and is asking questions about it.
+Always answer in ${effectiveLanguage}.
 Answer the user's question accurately based ONLY on the content of the attached document.
 Always cite the page number(s) where you found the information. If the document doesn't contain page numbers, estimate based on the position in the document.
 For each citation, include a short excerpt (the exact relevant sentence or phrase from the document).

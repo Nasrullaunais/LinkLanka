@@ -18,7 +18,7 @@ jest.mock('@langchain/google-genai', () => ({
   })),
 }));
 
-describe('TranslationService.generateTranslatedAudioFiles', () => {
+describe('TranslationService', () => {
   const baseTranslations: Translations = {
     english: 'Hello from LinkLanka',
     singlish: 'Ado machan kohomada',
@@ -158,5 +158,30 @@ describe('TranslationService.generateTranslatedAudioFiles', () => {
 
     expect(maxActive).toBeLessThanOrEqual(2);
     expect(maxActive).toBeGreaterThan(1);
+  });
+
+  it('normalizes "Ado" to "Adei" in tanglish translation output', async () => {
+    const service = createService();
+
+    mockInvoke.mockResolvedValueOnce({
+      transcription: 'Ado epdi iruka?',
+      translations: {
+        english: 'Dude, how are you?',
+        singlish: 'Ado kohomada?',
+        tanglish: 'Ado epdi iruka?',
+      },
+      detectedLanguage: 'singlish',
+      originalTone: 'casual',
+      confidenceScore: 92,
+      extractedActions: [],
+    });
+
+    const result = await service.translateIntent({
+      rawText: 'Ado epdi iruka?',
+      chatHistory: [],
+      userDictionary: '',
+    });
+
+    expect(result.translations.tanglish).toBe('Adei epdi iruka?');
   });
 });

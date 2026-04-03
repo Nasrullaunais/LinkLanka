@@ -24,21 +24,25 @@ import {
 
 class QAChatTurnDto {
   @IsIn(['user', 'ai'])
-  role: 'user' | 'ai';
+  role!: 'user' | 'ai';
 
   @IsString()
-  text: string;
+  text!: string;
 }
 
 class DocumentQADto {
   @IsString()
-  userQuestion: string;
+  userQuestion!: string;
 
   @IsArray()
   @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => QAChatTurnDto)
   chatHistory?: QAChatTurnDto[];
+
+  @IsIn(['english', 'singlish', 'tanglish'])
+  @IsOptional()
+  preferredLanguage?: 'english' | 'singlish' | 'tanglish';
 }
 
 @Controller('document-ai')
@@ -74,6 +78,7 @@ export class DocumentAiController {
       messageId,
       body.userQuestion,
       body.chatHistory ?? [],
+      body.preferredLanguage,
     );
   }
 }

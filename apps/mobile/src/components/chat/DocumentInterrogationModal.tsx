@@ -26,6 +26,10 @@ import {
 } from '../../services/api';
 import { getCachedMediaUri } from '../../services/mediaCache';
 import { useTheme } from '../../contexts/ThemeContext';
+import LanguagePickerModal, {
+  LANGUAGE_OPTIONS,
+  type PreferredLanguage,
+} from './LanguagePickerModal';
 
 // PDF panel occupies ~42 % of the screen; the chat panel takes the rest and
 // shrinks correctly when the soft keyboard opens.
@@ -44,6 +48,13 @@ interface DocumentInterrogationModalProps {
   visible: boolean;
   messageId: string;
   fileUrl: string;
+  detectedLanguage?:
+    | 'english'
+    | 'singlish'
+    | 'tanglish'
+    | 'mixed'
+    | 'unknown'
+    | null;
   /** Optional initial page to scroll to (from summary bullet tap). */
   initialPage?: number;
   onClose: () => void;
@@ -53,6 +64,39 @@ interface DocumentInterrogationModalProps {
 
 function storageKey(messageId: string): string {
   return `doc-qa-${messageId}`;
+}
+
+function languageStorageKey(messageId: string): string {
+  return `doc-qa-lang-${messageId}`;
+}
+
+function parsePreferredLanguage(rawValue: string | null): PreferredLanguage | null {
+  return rawValue === 'english' ||
+    rawValue === 'singlish' ||
+    rawValue === 'tanglish'
+    ? rawValue
+    : null;
+}
+
+function resolveDefaultLanguage(
+  detectedLanguage:
+    | 'english'
+    | 'singlish'
+    | 'tanglish'
+    | 'mixed'
+    | 'unknown'
+    | null
+    | undefined,
+): PreferredLanguage {
+  if (
+    detectedLanguage === 'english' ||
+    detectedLanguage === 'singlish' ||
+    detectedLanguage === 'tanglish'
+  ) {
+    return detectedLanguage;
+  }
+
+  return 'english';
 }
 
 function generateId(): string {
@@ -160,6 +204,7 @@ export default function DocumentInterrogationModal({
   visible,
   messageId,
   fileUrl,
+  detectedLanguage,
   initialPage,
   onClose,
 }: DocumentInterrogationModalProps) {
@@ -175,6 +220,10 @@ export default function DocumentInterrogationModal({
   const [totalPages, setTotalPages] = useState(0);
   const [pdfError, setPdfError] = useState(false);
   const [pdfErrorMessage, setPdfErrorMessage] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<PreferredLanguage>(
+    () => resolveDefaultLanguage(detectedLanguage),
+  );
+  const [isLanguagePickerOpen, setIsLanguagePickerOpen] = useState(false);
   const [resolvedFileUrl, setResolvedFileUrl] = useState(() =>
     normalizeFileUrl(fileUrl),
   );
@@ -186,11 +235,57 @@ export default function DocumentInterrogationModal({
     if (visible) {
       setPdfError(false);
       setPdfErrorMessage(null);
+      setIsLanguagePickerOpen(false);
       setCurrentPage(1);
       setTotalPages(0);
       setAndroidKeyboardOffset(0);
     }
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible || !messageId) {
+      return;
+    }
+
+    const fallbackLanguage = resolveDefaultLanguage(detectedLanguage);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const stored = await AsyncStorage.getItem(languageStorageKey(messageId));
+        if (cancelled) {
+          return;
+        }
+
+        const parsed = parsePreferredLanguage(stored);
+        setSelectedLanguage(parsed ?? fallbackLanguage);
+      } catch {
+        if (!cancelled) {
+          setSelectedLanguage(fallbackLanguage);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, messageId, detectedLanguage]);
+
+  const handleSelectLanguage = useCallback(
+    (language: PreferredLanguage) => {
+      setSelectedLanguage(language);
+      setIsLanguagePickerOpen(false);
+
+      if (!messageId) {
+        return;
+      }
+
+      AsyncStorage.setItem(languageStorageKey(messageId), language).catch(
+        () => {},
+      );
+    },
+    [messageId],
+  );
 
   useEffect(() => {
     if (Platform.OS !== 'android' || !visible) return;
@@ -304,7 +399,12 @@ export default function DocumentInterrogationModal({
 
     setIsAsking(true);
     try {
-      const response = await askDocumentQuestion(messageId, question, chatHistory);
+      const response = await askDocumentQuestion(
+        messageId,
+        question,
+        chatHistory,
+        selectedLanguage,
+      );
 
       const aiMsg: QAMessage = {
         id: generateId(),
@@ -329,7 +429,14 @@ export default function DocumentInterrogationModal({
     } finally {
       setIsAsking(false);
     }
-  }, [inputText, isAsking, qaMessages, messageId, persistHistory]);
+  }, [
+    inputText,
+    isAsking,
+    qaMessages,
+    messageId,
+    persistHistory,
+    selectedLanguage,
+  ]);
 
   // ── Navigate to page (from citation tap — via WebView) ─────────────────
   const goToPage = useCallback((page: number) => {
@@ -432,6 +539,9 @@ export default function DocumentInterrogationModal({
   );
 
   const filename = extractFilename(resolvedFileUrl);
+  const selectedLanguageLabel =
+    LANGUAGE_OPTIONS.find((option) => option.key === selectedLanguage)?.label ??
+    'English';
 
   return (
     <Modal
@@ -456,11 +566,22 @@ export default function DocumentInterrogationModal({
               {filename}
             </Text>
           </View>
-          {totalPages > 0 && (
-            <Text style={[styles.pageIndicator, { color: colors.textSecondary }]}>
-              {currentPage}/{totalPages}
-            </Text>
-          )}
+          <View style={styles.headerRight}>
+            <Pressable
+              onPress={() => setIsLanguagePickerOpen(true)}
+              style={[styles.languageBtn, { backgroundColor: colors.primaryFaded }]}
+            >
+              <Text style={[styles.languageBtnText, { color: colors.primary }]}>
+                {selectedLanguageLabel}
+              </Text>
+              <Ionicons name="chevron-down" size={14} color={colors.primary} />
+            </Pressable>
+            {totalPages > 0 && (
+              <Text style={[styles.pageIndicator, { color: colors.textSecondary }]}> 
+                {currentPage}/{totalPages}
+              </Text>
+            )}
+          </View>
         </View>
 
         {/* ── Top half: PDF viewer ── */}
@@ -560,6 +681,14 @@ export default function DocumentInterrogationModal({
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <LanguagePickerModal
+        visible={isLanguagePickerOpen}
+        preferredLanguage={selectedLanguage}
+        onSelect={handleSelectLanguage}
+        onClose={() => setIsLanguagePickerOpen(false)}
+        colors={colors}
+      />
     </Modal>
   );
 }
@@ -591,6 +720,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  languageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    gap: 4,
+  },
+  languageBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   pageIndicator: {
     fontSize: 13,

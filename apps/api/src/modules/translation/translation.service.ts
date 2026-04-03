@@ -360,14 +360,22 @@ Examples of messages WITHOUT actions:
           signal: AbortSignal.timeout(timeoutMs),
         });
 
+        const completeResult: TranslationResult = {
+          ...result,
+          detectedLanguage: result.detectedLanguage ?? 'unknown',
+          originalTone: result.originalTone ?? 'neutral',
+        };
+        const normalizedResult =
+          this.normalizeTranslationResult(completeResult);
+
         this.logger.log(
           `[translateIntent] success model=${candidate.modelName} inputType=${inputType} timeoutMs=${timeoutMs} durationMs=${Date.now() - startedAt}`,
         );
 
         return {
-          ...result,
-          detectedLanguage: result.detectedLanguage ?? 'unknown',
-          originalTone: result.originalTone ?? 'neutral',
+          ...normalizedResult,
+          detectedLanguage: normalizedResult.detectedLanguage,
+          originalTone: normalizedResult.originalTone,
         };
       } catch (error) {
         lastError = error;
@@ -402,6 +410,39 @@ Examples of messages WITHOUT actions:
   ): string {
     const normalized = (rawValue ?? '').trim();
     return normalized || defaultValue;
+  }
+
+  private normalizeTranslationResult(
+    result: TranslationResult,
+  ): TranslationResult {
+    return {
+      ...result,
+      translations: {
+        ...result.translations,
+        tanglish: this.normalizeTanglishLexicon(result.translations.tanglish),
+      },
+    };
+  }
+
+  private normalizeTanglishLexicon(text: string): string {
+    return text.replace(/\bado\b/gi, (match) =>
+      this.matchReplacementCase('adei', match),
+    );
+  }
+
+  private matchReplacementCase(replacement: string, source: string): string {
+    if (source === source.toUpperCase()) {
+      return replacement.toUpperCase();
+    }
+
+    const isTitleCase =
+      source[0] === source[0]?.toUpperCase() &&
+      source.slice(1) === source.slice(1).toLowerCase();
+    if (isTitleCase) {
+      return replacement[0].toUpperCase() + replacement.slice(1);
+    }
+
+    return replacement;
   }
 
   private resolveTranslationTimeoutMs(
