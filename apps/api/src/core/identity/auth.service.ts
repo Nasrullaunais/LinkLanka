@@ -9,6 +9,7 @@ import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 
 import { User } from './entities/user.entity';
+import { S3StorageService } from '../common/storage/s3-storage.service';
 
 export interface RegisterDto {
   email: string;
@@ -35,6 +36,7 @@ export class AuthService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly jwtService: JwtService,
+    private readonly s3StorageService: S3StorageService,
   ) {}
 
   async register(dto: RegisterDto): Promise<SafeUser> {
@@ -86,13 +88,27 @@ export class AuthService {
 
     return {
       access_token: accessToken,
-      user: this.toSafeUser(user),
+      user: await this.toSafeUser(user),
     };
   }
 
-  private toSafeUser(user: User): SafeUser {
+  private async toSafeUser(user: User): Promise<SafeUser> {
     const safeUser: Partial<User> = { ...user };
     delete safeUser.passwordHash;
+
+    const profilePictureUrl = safeUser.profilePictureUrl?.trim();
+    if (!profilePictureUrl) {
+      safeUser.profilePictureUrl = null;
+      return safeUser as SafeUser;
+    }
+
+    try {
+      safeUser.profilePictureUrl =
+        await this.s3StorageService.createSignedReadUrl(profilePictureUrl);
+    } catch {
+      safeUser.profilePictureUrl = profilePictureUrl;
+    }
+
     return safeUser as SafeUser;
   }
 }

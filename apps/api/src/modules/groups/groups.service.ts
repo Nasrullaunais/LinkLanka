@@ -14,6 +14,7 @@ import {
 } from '../chat/entities/group-member.entity';
 import { Message } from '../chat/entities/message.entity';
 import { User } from '../../core/identity/entities/user.entity';
+import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 // ── Shared interfaces ────────────────────────────────────────────────────────
 
@@ -53,6 +54,8 @@ export class GroupsService {
 
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+
+    private readonly s3StorageService: S3StorageService,
   ) {}
 
   // ── Groups ────────────────────────────────────────────────────────────────
@@ -106,7 +109,9 @@ export class GroupsService {
                 id: peer.id,
                 displayName: peer.displayName,
                 nativeDialect: peer.nativeDialect,
-                profilePictureUrl: peer.profilePictureUrl,
+                profilePictureUrl: await this.signProfilePictureUrl(
+                  peer.profilePictureUrl,
+                ),
               };
             }
           }
@@ -235,7 +240,13 @@ export class GroupsService {
             'email',
           ],
         });
-        return { ...m, user } as GroupMember & { user: Partial<User> | null };
+        const signedUser = user
+          ? await this.withSignedProfilePicture(user)
+          : null;
+        return {
+          ...m,
+          user: signedUser,
+        } as GroupMember & { user: Partial<User> | null };
       }),
     );
   }
@@ -336,7 +347,7 @@ export class GroupsService {
       ],
     });
     if (!user) throw new NotFoundException('User not found');
-    return user;
+    return this.withSignedProfilePicture(user);
   }
 
   async updateUserProfile(
@@ -369,7 +380,10 @@ export class GroupsService {
       order: { displayName: 'ASC' },
     });
 
-    return users.filter((u) => u.id !== currentUserId);
+    const visibleUsers = users.filter((u) => u.id !== currentUserId);
+    return Promise.all(
+      visibleUsers.map((user) => this.withSignedProfilePicture(user)),
+    );
   }
 
   // ── Push token access (server-side only, never exposed via API) ────────────
@@ -421,5 +435,34 @@ export class GroupsService {
     if (!membership || membership.role !== GroupMemberRole.ADMIN) {
       throw new ForbiddenException('Only group admins can perform this action');
     }
+  }
+
+  private async signProfilePictureUrl(
+    profilePictureUrl: string | null | undefined,
+  ): Promise<string | null> {
+    const trimmed = profilePictureUrl?.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      return await this.s3StorageService.createSignedReadUrl(trimmed);
+    } catch {
+      // Keep existing behavior as a fallback when signing fails.
+      return trimmed;
+    }
+  }
+
+  private async withSignedProfilePicture<
+    T extends { profilePictureUrl?: string | null },
+  >(record: T): Promise<T> {
+    const signedProfilePictureUrl = await this.signProfilePictureUrl(
+      record.profilePictureUrl,
+    );
+
+    return {
+      ...record,
+      profilePictureUrl: signedProfilePictureUrl,
+    } as T;
   }
 }
