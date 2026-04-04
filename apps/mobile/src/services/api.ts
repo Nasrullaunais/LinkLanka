@@ -471,8 +471,6 @@ export interface QAChatTurn {
   text: string;
 }
 
-export type DocumentQuestionLanguage = 'english' | 'singlish' | 'tanglish';
-
 /**
  * Fetch the 3-bullet AI summary for a document message.
  * Results are server-cached after the first call.
@@ -494,11 +492,10 @@ export async function askDocumentQuestion(
   messageId: string,
   userQuestion: string,
   chatHistory: QAChatTurn[],
-  preferredLanguage?: DocumentQuestionLanguage,
 ): Promise<DocumentQAResponse> {
   const { data } = await apiClient.post<DocumentQAResponse>(
     `/document-ai/${messageId}/qa`,
-    { userQuestion, chatHistory, preferredLanguage },
+    { userQuestion, chatHistory },
   );
   return data;
 }

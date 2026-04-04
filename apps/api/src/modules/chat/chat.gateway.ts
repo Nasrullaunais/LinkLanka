@@ -266,27 +266,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
     }
 
-    const existingMessage = await this.chatService.findMessageByClientTempId(
-      userId,
-      normalizedPayload.groupId,
-      normalizedPayload.clientTempId,
-    );
-    if (existingMessage) {
-      this.logger.log(
-        `[sendMessage] idempotent replay matched messageId=${existingMessage.id} groupId=${normalizedPayload.groupId}`,
-      );
-      if (isMedia) {
-        const signedRawContent = await this.signRawMediaContent(
-          existingMessage.rawContent,
-        );
-        return {
-          ...existingMessage,
-          rawContent: signedRawContent,
-        } as Message;
-      }
-      return existingMessage;
-    }
-
     // ── Phase 1: Persist raw message immediately & broadcast ────────────
     const fileUrl: string | undefined = isMedia
       ? normalizedPayload.fileUrl
@@ -309,7 +288,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       null, // translations — filled in Phase 2
       null, // confidenceScore — filled in Phase 2
       null, // extractedActions — filled in Phase 2
-      normalizedPayload.clientTempId ?? null,
     );
 
     this.logger.log(

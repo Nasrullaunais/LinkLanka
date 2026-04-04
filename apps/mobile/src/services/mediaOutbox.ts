@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type QueuedMediaType = 'TEXT' | 'AUDIO' | 'IMAGE' | 'DOCUMENT';
-export type QueuedMessageState = 'pending' | 'failed';
+export type QueuedMediaType = 'AUDIO' | 'IMAGE' | 'DOCUMENT';
 
 export interface QueuedAudioPayload {
   localUri: string;
@@ -19,12 +18,10 @@ export interface QueuedMediaJob {
   groupId: string;
   optimisticId: string;
   mediaType: QueuedMediaType;
-  state: QueuedMessageState;
   createdAt: string;
   updatedAt: string;
   attemptCount: number;
   nextAttemptAt: number;
-  text?: string;
   audio?: QueuedAudioPayload;
   file?: QueuedFilePayload;
   lastError?: string;
@@ -75,11 +72,6 @@ function sanitizeFilePayload(raw: unknown): QueuedFilePayload | null {
   };
 }
 
-function sanitizeTextPayload(raw: unknown): string | null {
-  if (!isNonEmptyString(raw)) return null;
-  return raw.trim();
-}
-
 function sanitizeJob(raw: unknown, groupId: string): QueuedMediaJob | null {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -87,38 +79,19 @@ function sanitizeJob(raw: unknown, groupId: string): QueuedMediaJob | null {
   if (
     !isNonEmptyString(value.id) ||
     !isNonEmptyString(value.optimisticId) ||
-    (!isNonEmptyString(value.mediaType) &&
-      !isNonEmptyString(value.messageType))
+    !isNonEmptyString(value.mediaType)
   ) {
     return null;
   }
 
-  // Backward compatibility: older payloads use "mediaType" and no "state".
-  const mediaTypeValue = isNonEmptyString(value.mediaType)
-    ? value.mediaType
-    : isNonEmptyString(value.messageType)
-      ? value.messageType
-      : null;
-  if (!mediaTypeValue) return null;
-
-  const mediaType = mediaTypeValue.toUpperCase();
-  if (
-    mediaType !== 'TEXT' &&
-    mediaType !== 'AUDIO' &&
-    mediaType !== 'IMAGE' &&
-    mediaType !== 'DOCUMENT'
-  ) {
+  const mediaType = value.mediaType.toUpperCase();
+  if (mediaType !== 'AUDIO' && mediaType !== 'IMAGE' && mediaType !== 'DOCUMENT') {
     return null;
   }
-
-  const state: QueuedMessageState = value.state === 'failed' ? 'failed' : 'pending';
 
   const audio = sanitizeAudioPayload(value.audio);
   const file = sanitizeFilePayload(value.file);
-  const text =
-    sanitizeTextPayload(value.text) ?? sanitizeTextPayload(value.rawContent);
 
-  if (mediaType === 'TEXT' && !text) return null;
   if (mediaType === 'AUDIO' && !audio) return null;
   if ((mediaType === 'IMAGE' || mediaType === 'DOCUMENT') && !file) return null;
 
@@ -140,12 +113,10 @@ function sanitizeJob(raw: unknown, groupId: string): QueuedMediaJob | null {
     groupId,
     optimisticId: value.optimisticId.trim(),
     mediaType,
-    state,
     createdAt,
     updatedAt,
     attemptCount,
     nextAttemptAt,
-    ...(text ? { text } : {}),
     ...(audio ? { audio } : {}),
     ...(file ? { file } : {}),
     ...(isNonEmptyString(value.lastError)
