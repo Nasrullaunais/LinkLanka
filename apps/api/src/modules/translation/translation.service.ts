@@ -719,12 +719,10 @@ Examples of messages WITHOUT actions:
     detectedLanguage: DetectedLanguage;
     originalTone: string;
   }): Promise<TranslatedAudioUrls> {
-    const targets = this.getTargetLanguages(params.detectedLanguage);
+    const targets = this.getTargetLanguages();
     if (targets.length === 0) return {};
 
-    const englishIsMandatory = this.isEnglishMandatoryForDetectedLanguage(
-      params.detectedLanguage,
-    );
+    const englishIsMandatory = this.isEnglishMandatoryForAudioGeneration();
 
     const jobs = targets
       .map((language) => ({
@@ -896,27 +894,12 @@ Examples of messages WITHOUT actions:
     return message;
   }
 
-  private getTargetLanguages(
-    detectedLanguage: DetectedLanguage,
-  ): SupportedLanguage[] {
-    switch (detectedLanguage) {
-      case 'singlish':
-        return ['english', 'tanglish'];
-      case 'tanglish':
-        return ['english', 'singlish'];
-      case 'english':
-        return ['singlish', 'tanglish'];
-      case 'mixed':
-      case 'unknown':
-      default:
-        return ['english', 'singlish', 'tanglish'];
-    }
+  private getTargetLanguages(): SupportedLanguage[] {
+    return ['english', 'singlish', 'tanglish'];
   }
 
-  private isEnglishMandatoryForDetectedLanguage(
-    detectedLanguage: DetectedLanguage,
-  ): boolean {
-    return detectedLanguage === 'singlish' || detectedLanguage === 'tanglish';
+  private isEnglishMandatoryForAudioGeneration(): boolean {
+    return true;
   }
 
   private async generateSpeechWav(params: {

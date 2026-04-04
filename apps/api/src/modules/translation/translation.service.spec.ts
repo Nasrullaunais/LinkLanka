@@ -235,7 +235,7 @@ describe('TranslationService', () => {
     expect(result.detectedLanguage).toBe('mixed');
   });
 
-  it('routes singlish dominant audio generation to english and tanglish only', async () => {
+  it('generates all three audio targets even when singlish is dominant', async () => {
     const service = createService({ ttsMaxConcurrency: '1' });
 
     const generateSpeechSpy = jest
@@ -248,13 +248,17 @@ describe('TranslationService', () => {
       originalTone: 'neutral',
     });
 
-    expect(Object.keys(output).sort()).toEqual(['english', 'tanglish']);
+    expect(Object.keys(output).sort()).toEqual([
+      'english',
+      'singlish',
+      'tanglish',
+    ]);
 
     const requestedLanguages = generateSpeechSpy.mock.calls
       .map((call) => (call[0] as { language: SupportedLanguage }).language)
       .sort();
 
-    expect(requestedLanguages).toEqual(['english', 'tanglish']);
+    expect(requestedLanguages).toEqual(['english', 'singlish', 'tanglish']);
   });
 
   it('retries english generation when english is mandatory', async () => {
@@ -288,7 +292,7 @@ describe('TranslationService', () => {
     expect(englishAttempts).toBe(2);
     expect(output.english).toBeDefined();
     expect(output.singlish).toBeDefined();
-    expect(output.tanglish).toBeUndefined();
+    expect(output.tanglish).toBeDefined();
     expect(generateSpeechSpy).toHaveBeenCalled();
   });
 });
