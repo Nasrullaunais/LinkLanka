@@ -235,7 +235,6 @@ export async function uploadProfilePicture(
   const { data } = await apiClient.post<{ url: string }>(
     '/users/me/profile-picture',
     formData,
-    { headers: { 'Content-Type': 'multipart/form-data' } },
   );
   return data;
 }

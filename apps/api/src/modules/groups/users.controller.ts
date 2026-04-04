@@ -78,11 +78,17 @@ export class UsersController {
     const url = uploaded.url;
 
     // Persist the URL on the user record
-    await this.groupsService.updateUserProfile(req.user.sub, {
-      profilePictureUrl: url,
-    });
+    const updatedProfile = await this.groupsService.updateUserProfile(
+      req.user.sub,
+      {
+        profilePictureUrl: url,
+      },
+    );
 
-    return { url };
+    return {
+      // Return the hydrated/signed URL used by user-facing endpoints.
+      url: updatedProfile.profilePictureUrl,
+    };
   }
 
   /** GET /users?search=&limit= — search users by display name. */

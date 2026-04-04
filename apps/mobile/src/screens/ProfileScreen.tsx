@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,13 @@ const DIALECTS = [
   { key: 'english', label: 'English' },
 ] as const;
 
+function inferProfileImageMime(uri: string): 'image/jpeg' | 'image/png' | 'image/webp' {
+  const cleanUri = uri.split('?')[0]?.toLowerCase() ?? '';
+  if (cleanUri.endsWith('.png')) return 'image/png';
+  if (cleanUri.endsWith('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function ProfileScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -42,6 +49,14 @@ export default function ProfileScreen({ navigation }: Props) {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPic, setIsUploadingPic] = useState(false);
   const [formError, setFormError] = useState('');
+  const [pendingAvatarUrl, setPendingAvatarUrl] = useState<string | null>(null);
+
+  const currentAvatarUrl = pendingAvatarUrl ?? userProfilePicture;
+
+  useEffect(() => {
+    // Auth profile refresh is authoritative; clear local optimistic override.
+    setPendingAvatarUrl(null);
+  }, [userProfilePicture]);
 
   // ── Profile picture upload flow ──────────────────────────────────────────
   const handlePickImage = useCallback(async () => {
@@ -69,7 +84,11 @@ export default function ProfileScreen({ navigation }: Props) {
         quality: 0.7,
       });
 
-      await uploadProfilePicture(compressedUri);
+      const mimeType = inferProfileImageMime(compressedUri);
+      const uploaded = await uploadProfilePicture(compressedUri, mimeType);
+      if (uploaded.url) {
+        setPendingAvatarUrl(uploaded.url);
+      }
       await refreshProfile();
     } catch (err) {
       console.error('[ProfileScreen] Profile picture upload failed:', err);
@@ -136,8 +155,14 @@ export default function ProfileScreen({ navigation }: Props) {
             <View style={[styles.avatar, { backgroundColor: colors.avatarFallbackBg }]}>
               <ActivityIndicator color="#fff" />
             </View>
-          ) : userProfilePicture ? (
-            <Image source={{ uri: userProfilePicture }} style={styles.avatar} contentFit="cover" transition={200} />
+          ) : currentAvatarUrl ? (
+            <Image
+              source={{ uri: currentAvatarUrl }}
+              style={styles.avatar}
+              contentFit="cover"
+              transition={200}
+              recyclingKey={currentAvatarUrl}
+            />
           ) : (
             <View style={[styles.avatar, { backgroundColor: colors.avatarFallbackBg }]}>
               <Ionicons name="person" size={48} color="#fff" />
