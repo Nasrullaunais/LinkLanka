@@ -24,7 +24,6 @@ import {
   type QAChatTurn,
   type QACitation,
 } from '../../services/api';
-import { getCachedMediaUri } from '../../services/mediaCache';
 import { useTheme } from '../../contexts/ThemeContext';
 import LanguagePickerModal, {
   LANGUAGE_OPTIONS,
@@ -154,6 +153,15 @@ function normalizeFileUrl(url: string): string {
   if (!storedOrigin || !currentOrigin || storedOrigin === currentOrigin) {
     return url;
   }
+
+  const isLocalOrigin = /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?$/i.test(
+    storedOrigin,
+  );
+
+  if (!isLocalOrigin) {
+    return url;
+  }
+
   return url.replace(storedOrigin, currentOrigin);
 }
 
@@ -227,7 +235,6 @@ export default function DocumentInterrogationModal({
   const [resolvedFileUrl, setResolvedFileUrl] = useState(() =>
     normalizeFileUrl(fileUrl),
   );
-  const remoteSourceUrlRef = useRef<string | null>(null);
   const { colors } = useTheme();
 
   // ── Reset state when modal opens ───────────────────────────────────────
@@ -308,7 +315,6 @@ export default function DocumentInterrogationModal({
 
   useEffect(() => {
     const normalized = normalizeFileUrl(fileUrl);
-    remoteSourceUrlRef.current = isHttpUrl(normalized) ? normalized : null;
     setResolvedFileUrl(normalized);
     setPdfError(false);
     setPdfErrorMessage(null);
@@ -318,29 +324,31 @@ export default function DocumentInterrogationModal({
     let cancelled = false;
 
     (async () => {
-      const cached = await getCachedMediaUri(normalized, 'document');
       if (cancelled) {
         return;
       }
 
-      if (isFileUri(cached)) {
-        const readable = await hasReadableLocalFile(cached);
+      if (isFileUri(normalized)) {
+        const readable = await hasReadableLocalFile(normalized);
         if (!readable) {
-          const remoteFallback = remoteSourceUrlRef.current;
-          if (remoteFallback) {
-            setResolvedFileUrl(remoteFallback);
-            return;
-          }
-
           setPdfError(true);
           setPdfErrorMessage(
             'This local document file is no longer available. Please resend the document.',
           );
           return;
         }
+
+        setResolvedFileUrl(normalized);
+        return;
       }
 
-      setResolvedFileUrl(cached);
+      if (!isHttpUrl(normalized)) {
+        setPdfError(true);
+        setPdfErrorMessage('Invalid document URL for preview.');
+        return;
+      }
+
+      setResolvedFileUrl(normalized);
     })();
 
     return () => {
@@ -463,7 +471,7 @@ export default function DocumentInterrogationModal({
             setCurrentPage(data.page);
             break;
           case 'error':
-            console.error('[DocInterrogation] PDF.js error:', data.msg);
+            console.warn('[DocInterrogation] PDF.js warning:', data.msg);
             setPdfErrorMessage(
               typeof data.msg === 'string' && data.msg.trim().length > 0
                 ? data.msg

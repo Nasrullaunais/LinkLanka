@@ -59,6 +59,8 @@ export interface ChatMessage {
   confidenceScore?: number | null;
   extractedActions?: ExtractedAction[] | null;
   isOptimistic?: boolean;
+  sendStatus?: 'sending' | 'failed' | 'sent';
+  sendFailureReason?: string | null;
   isRetrying?: boolean;
   /** Set when the server has saved the raw message but AI translation is
    *  still in progress (two-phase send). Cleared when `messageTranslated`
@@ -801,7 +803,19 @@ function MessageBubble({
   } = useChatList();
 
   const isOwn = message.senderId === currentUserId;
-  const { contentType, rawContent, translations, confidenceScore, isOptimistic, isRetrying } = message;
+  const {
+    contentType,
+    rawContent,
+    translations,
+    confidenceScore,
+    isOptimistic,
+    isRetrying,
+    sendStatus: rawSendStatus,
+    sendFailureReason,
+  } = message;
+  const sendStatus = rawSendStatus ?? (isOptimistic ? 'sending' : 'sent');
+  const showPendingSendStatus = isOwn && isOptimistic && sendStatus === 'sending';
+  const showFailedSendStatus = isOwn && isOptimistic && sendStatus === 'failed';
 
   // Cap bubble width on large screens so messages do not become overly wide.
   const rowMaxWidth = useMemo(
@@ -988,7 +1002,7 @@ function MessageBubble({
             messageId={message.id}
             fileUrl={rawContent}
             isOwn={isOwn}
-            isPendingUpload={Boolean(message.isOptimistic)}
+            isPendingUpload={Boolean(message.isOptimistic && sendStatus === 'sending')}
             onOpenInterrogation={() =>
               onOpenDocumentInterrogation?.(
                 message.id,
@@ -1011,7 +1025,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -1096,6 +1110,34 @@ function MessageBubble({
               </Text>
             )}
 
+            {showPendingSendStatus && (
+              <View style={styles.sendStateRow}>
+                <Ionicons name="time-outline" size={12} color={colors.editedLabel} />
+                <Text style={[styles.sendStateText, { color: colors.editedLabel }]}>Sending...</Text>
+              </View>
+            )}
+
+            {showFailedSendStatus && (
+              <Pressable
+                onPress={onRetry ? () => onRetry(message.id) : undefined}
+                disabled={!onRetry}
+                hitSlop={8}
+                accessibilityLabel={
+                  sendFailureReason
+                    ? `Not sent. ${sendFailureReason}. Tap to retry`
+                    : 'Not sent. Tap to retry'
+                }
+                style={({ pressed }) => [
+                  styles.sendStateRow,
+                  styles.sendFailedRow,
+                  pressed && onRetry ? styles.sendFailedRowPressed : null,
+                ]}
+              >
+                <Ionicons name="alert-circle-outline" size={13} color={colors.destructive} />
+                <Text style={[styles.sendStateText, styles.sendFailedText, { color: colors.destructive }]}>Not sent. Tap to retry</Text>
+              </Pressable>
+            )}
+
             {/* Translation card */}
             <TranslationSection
               isOwn={isOwn}
@@ -1135,6 +1177,8 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     pm.contentType === nm.contentType &&
     pm.senderId === nm.senderId &&
     pm.isOptimistic === nm.isOptimistic &&
+    pm.sendStatus === nm.sendStatus &&
+    pm.sendFailureReason === nm.sendFailureReason &&
     pm.isRetrying === nm.isRetrying &&
     pm.isTranslating === nm.isTranslating &&
     pm.isEdited === nm.isEdited &&
@@ -1269,6 +1313,30 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginRight: 4,
     marginLeft: 0,
+  },
+  sendStateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+    marginRight: 4,
+    marginLeft: 4,
+  },
+  sendStateText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  sendFailedRow: {
+    alignSelf: 'flex-end',
+    borderRadius: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  sendFailedText: {
+    textDecorationLine: 'underline',
+  },
+  sendFailedRowPressed: {
+    opacity: 0.65,
   },
 
   // Image

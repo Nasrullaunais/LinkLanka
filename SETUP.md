@@ -123,3 +123,16 @@ bun run android
 - Android emulator API URL should be `http://10.0.2.2:3000` in `apps/mobile/.env`
 - Keep `AWS_S3_PREFIX=linklanka/` so uploads stay inside the expected bucket folder.
 - If `apps/mobile/node_modules` is root-owned (Linux/macOS): `sudo chown -R $USER:$USER apps/mobile/node_modules`
+
+## Personal Dictionary Language Buckets Rollout (Production)
+
+When deploying the 50-per-language personal dictionary update (Singlish/English/Tanglish), run the database migration script first in production environments where `DB_SYNCHRONIZE=false`.
+
+```bash
+psql "$DATABASE_URL" -f apps/api/scripts/migrate-personal-context-language-buckets.sql
+```
+
+What this script does:
+- Normalizes invalid or null `dialect_type` values to `english`
+- Enforces `dialect_type` as non-null with default `english`
+- Replaces global uniqueness `(user_id, slang_word)` with language-scoped uniqueness `(user_id, slang_word, dialect_type)`

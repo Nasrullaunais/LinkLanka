@@ -8,8 +8,13 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+import {
+  DEFAULT_PERSONAL_CONTEXT_DIALECT,
+  type PersonalContextDialect,
+} from '../personal-context.constants';
+
 @Entity('personal_context')
-@Unique(['userId', 'slangWord'])
+@Unique(['userId', 'slangWord', 'dialectType'])
 export class PersonalContext {
   @PrimaryGeneratedColumn('uuid', { name: 'id' })
   id!: string;
@@ -29,8 +34,14 @@ export class PersonalContext {
   })
   standardMeaning!: string;
 
-  @Column({ type: 'varchar', length: 50, name: 'dialect_type', nullable: true })
-  dialectType!: string | null;
+  @Column({
+    type: 'varchar',
+    length: 20,
+    name: 'dialect_type',
+    nullable: false,
+    default: DEFAULT_PERSONAL_CONTEXT_DIALECT,
+  })
+  dialectType!: PersonalContextDialect;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;

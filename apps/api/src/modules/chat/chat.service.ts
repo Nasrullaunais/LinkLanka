@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository, SelectQueryBuilder } from 'typeorm';
+import { In, QueryFailedError, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Message, MessageContentType } from './entities/message.entity';
 import { MessageHiddenByUser } from './entities/message-hidden-by-user.entity';
@@ -46,6 +46,45 @@ export class ChatService {
       .andWhere('mh.id IS NULL');
   }
 
+  private normalizeClientTempId(clientTempId?: string | null): string | null {
+    if (typeof clientTempId !== 'string') return null;
+    const trimmed = clientTempId.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private async findByClientTempId(
+    userId: string,
+    groupId: string,
+    clientTempId: string,
+  ): Promise<Message | null> {
+    return this.messageRepository
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.sender', 'sender')
+      .where('m.group_id = :groupId', { groupId })
+      .andWhere('sender.id = :userId', { userId })
+      .andWhere('m.client_temp_id = :clientTempId', { clientTempId })
+      .getOne();
+  }
+
+  private isClientTempUniqueConstraintViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) return false;
+
+    const driverError = error.driverError as {
+      code?: string;
+      constraint?: string;
+      detail?: string;
+    };
+
+    if (driverError?.code !== '23505') return false;
+
+    const constraint = (driverError.constraint ?? '').toLowerCase();
+    const detail = (driverError.detail ?? '').toLowerCase();
+    return (
+      constraint.includes('uq_messages_sender_group_client_temp_id') ||
+      detail.includes('client_temp_id')
+    );
+  }
+
   async saveMessage(
     userId: string,
     groupId: string,
@@ -55,12 +94,28 @@ export class ChatService {
     translations: Translations | null = null,
     confidenceScore: number | null = null,
     extractedActions: ExtractedAction[] | null = null,
+    clientTempId?: string | null,
   ): Promise<Message> {
+    const normalizedClientTempId = this.normalizeClientTempId(clientTempId);
+    if (normalizedClientTempId) {
+      const existing = await this.findByClientTempId(
+        userId,
+        groupId,
+        normalizedClientTempId,
+      );
+      if (existing) {
+        return existing;
+      }
+    }
+
     const message: Message = this.messageRepository.create({
       sender: { id: userId },
       groupId,
       contentType,
       rawContent,
+      ...(normalizedClientTempId !== null && {
+        clientTempId: normalizedClientTempId,
+      }),
       ...(transcription !== null && { transcription }),
       ...(translations !== null && { translations }),
       ...(confidenceScore !== null && { confidenceScore }),
@@ -68,7 +123,34 @@ export class ChatService {
         extractedActions.length > 0 && { extractedActions }),
     });
 
-    return this.messageRepository.save(message);
+    try {
+      return await this.messageRepository.save(message);
+    } catch (error) {
+      if (
+        normalizedClientTempId &&
+        this.isClientTempUniqueConstraintViolation(error)
+      ) {
+        const existing = await this.findByClientTempId(
+          userId,
+          groupId,
+          normalizedClientTempId,
+        );
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
+  }
+
+  async findMessageByClientTempId(
+    userId: string,
+    groupId: string,
+    clientTempId?: string | null,
+  ): Promise<Message | null> {
+    const normalizedClientTempId = this.normalizeClientTempId(clientTempId);
+    if (!normalizedClientTempId) return null;
+    return this.findByClientTempId(userId, groupId, normalizedClientTempId);
   }
 
   async getPaginatedHistory(

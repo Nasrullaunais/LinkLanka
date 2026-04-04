@@ -138,6 +138,25 @@ export class AudioController {
       throw new BadRequestException('You are not a member of this group');
     }
 
+    const existingMessage = await this.chatService.findMessageByClientTempId(
+      userId,
+      groupId,
+      body.clientTempId,
+    );
+    if (existingMessage) {
+      const signedRawContent = await this.signRawMediaContent(
+        existingMessage.rawContent,
+      );
+      this.logger.log(
+        `[processAudio] idempotent replay matched messageId=${existingMessage.id}, groupId=${groupId}`,
+      );
+      return {
+        success: true,
+        messageId: existingMessage.id,
+        rawContent: signedRawContent,
+      };
+    }
+
     // ── 3. Persist audio to S3 ────────────────────────────────────────────
     this.logger.log(
       `[processAudio] Saving audio for userId=${userId} groupId=${groupId}`,
@@ -164,6 +183,7 @@ export class AudioController {
       null, // translations — filled in Phase 2
       null, // confidenceScore — filled in Phase 2
       null, // extractedActions — filled in Phase 2
+      body.clientTempId ?? null,
     );
 
     this.logger.log(

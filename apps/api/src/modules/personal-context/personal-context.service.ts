@@ -3,11 +3,32 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { PersonalContext } from './entities/personal-context.entity';
+import {
+  DEFAULT_PERSONAL_CONTEXT_DIALECT,
+  PERSONAL_CONTEXT_DIALECT_LABELS,
+  PERSONAL_CONTEXT_DIALECTS,
+  type PersonalContextDialect,
+} from './personal-context.constants';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const MAX_ENTRIES_PER_USER = 50;
-const MAX_DICTIONARY_CHARS = 1500;
+const MAX_ENTRIES_PER_LANGUAGE = 50;
+const MAX_DICTIONARY_CHARS = 9000;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const MAX_TOTAL_ENTRIES =
+  MAX_ENTRIES_PER_LANGUAGE * PERSONAL_CONTEXT_DIALECTS.length;
+
+export interface PersonalContextLanguageCount {
+  count: number;
+  max: number;
+  remaining: number;
+}
+
+export interface PersonalContextCountSummary {
+  totalCount: number;
+  totalMax: number;
+  perLanguage: Record<PersonalContextDialect, PersonalContextLanguageCount>;
+}
 
 interface CacheEntry {
   value: string;
@@ -24,13 +45,42 @@ export class PersonalContextService {
     private readonly personalContextRepository: Repository<PersonalContext>,
   ) {}
 
+  // ── Dialect helpers ─────────────────────────────────────────────────────
+
+  get defaultDialect(): PersonalContextDialect {
+    return DEFAULT_PERSONAL_CONTEXT_DIALECT;
+  }
+
+  get supportedDialects(): readonly PersonalContextDialect[] {
+    return PERSONAL_CONTEXT_DIALECTS;
+  }
+
+  normalizeDialectType(
+    value: string | null | undefined,
+  ): PersonalContextDialect {
+    if (!value) return this.defaultDialect;
+    const normalized = value.toLowerCase();
+    if (
+      PERSONAL_CONTEXT_DIALECTS.includes(normalized as PersonalContextDialect)
+    ) {
+      return normalized as PersonalContextDialect;
+    }
+    return this.defaultDialect;
+  }
+
   // ── Read operations ──────────────────────────────────────────────────────
 
   async findAllByUser(userId: string): Promise<PersonalContext[]> {
-    return this.personalContextRepository.find({
+    const entries = await this.personalContextRepository.find({
       where: { userId },
       order: { createdAt: 'ASC' },
     });
+
+    for (const entry of entries) {
+      entry.dialectType = this.normalizeDialectType(entry.dialectType);
+    }
+
+    return entries;
   }
 
   async findOneByUser(
@@ -45,18 +95,90 @@ export class PersonalContextService {
   async findByUserAndWord(
     userId: string,
     slangWord: string,
+    dialectType: PersonalContextDialect,
   ): Promise<PersonalContext | null> {
-    return this.personalContextRepository.findOne({
+    const entries = await this.personalContextRepository.find({
       where: { userId, slangWord },
+      order: { createdAt: 'ASC' },
     });
+
+    return (
+      entries.find(
+        (entry) => this.normalizeDialectType(entry.dialectType) === dialectType,
+      ) ?? null
+    );
   }
 
   async countByUser(userId: string): Promise<number> {
     return this.personalContextRepository.count({ where: { userId } });
   }
 
-  get maxEntriesPerUser(): number {
-    return MAX_ENTRIES_PER_USER;
+  async countByUserAndDialect(
+    userId: string,
+    dialectType: PersonalContextDialect,
+  ): Promise<number> {
+    const summary = await this.getCountSummary(userId);
+    return summary.perLanguage[dialectType].count;
+  }
+
+  async getCountSummary(userId: string): Promise<PersonalContextCountSummary> {
+    const perLanguage: Record<
+      PersonalContextDialect,
+      PersonalContextLanguageCount
+    > = {
+      singlish: {
+        count: 0,
+        max: MAX_ENTRIES_PER_LANGUAGE,
+        remaining: MAX_ENTRIES_PER_LANGUAGE,
+      },
+      english: {
+        count: 0,
+        max: MAX_ENTRIES_PER_LANGUAGE,
+        remaining: MAX_ENTRIES_PER_LANGUAGE,
+      },
+      tanglish: {
+        count: 0,
+        max: MAX_ENTRIES_PER_LANGUAGE,
+        remaining: MAX_ENTRIES_PER_LANGUAGE,
+      },
+    };
+
+    const rawCounts = await this.personalContextRepository
+      .createQueryBuilder('pc')
+      .select('pc.dialectType', 'dialectType')
+      .addSelect('COUNT(*)', 'count')
+      .where('pc.userId = :userId', { userId })
+      .groupBy('pc.dialectType')
+      .getRawMany<{ dialectType: string | null; count: string }>();
+
+    for (const row of rawCounts) {
+      const dialect = this.normalizeDialectType(row.dialectType);
+      perLanguage[dialect].count += Number(row.count);
+    }
+
+    let totalCount = 0;
+    for (const dialect of PERSONAL_CONTEXT_DIALECTS) {
+      const count = perLanguage[dialect].count;
+      totalCount += count;
+      perLanguage[dialect].remaining = Math.max(
+        0,
+        MAX_ENTRIES_PER_LANGUAGE - count,
+      );
+    }
+
+    return {
+      totalCount,
+      totalMax: MAX_TOTAL_ENTRIES,
+      perLanguage,
+    };
+  }
+
+  get maxEntriesPerLanguage(): number {
+    return MAX_ENTRIES_PER_LANGUAGE;
+  }
+
+  get maxTotalEntries(): number {
+    return MAX_TOTAL_ENTRIES;
   }
 
   // ── Write operations ─────────────────────────────────────────────────────
@@ -65,13 +187,13 @@ export class PersonalContextService {
     userId: string,
     slangWord: string,
     standardMeaning: string,
-    dialectType?: string,
+    dialectType: PersonalContextDialect,
   ): Promise<PersonalContext> {
     const slangEntry: PersonalContext = this.personalContextRepository.create({
       userId,
       slangWord,
       standardMeaning,
-      dialectType: dialectType ?? null,
+      dialectType,
     });
 
     const saved = await this.personalContextRepository.save(slangEntry);
@@ -82,7 +204,7 @@ export class PersonalContextService {
   async updateEntry(
     id: string,
     userId: string,
-    dto: { standardMeaning?: string; dialectType?: string | null },
+    dto: { standardMeaning?: string; dialectType?: PersonalContextDialect },
   ): Promise<PersonalContext> {
     const entry = await this.findOneByUser(id, userId);
     if (!entry) {
@@ -95,7 +217,7 @@ export class PersonalContextService {
       entry.standardMeaning = dto.standardMeaning;
     }
     if (dto.dialectType !== undefined) {
-      entry.dialectType = dto.dialectType ?? null;
+      entry.dialectType = dto.dialectType;
     }
 
     const updated = await this.personalContextRepository.save(entry);
@@ -124,11 +246,7 @@ export class PersonalContextService {
       return cached.value;
     }
 
-    const slangEntries: PersonalContext[] =
-      await this.personalContextRepository.find({
-        where: { userId },
-        order: { createdAt: 'ASC' },
-      });
+    const slangEntries: PersonalContext[] = await this.findAllByUser(userId);
 
     if (slangEntries.length === 0) {
       const emptyResult = '';
@@ -136,20 +254,57 @@ export class PersonalContextService {
       return emptyResult;
     }
 
-    // Build the dictionary string with a hard cap of MAX_DICTIONARY_CHARS.
-    // Entries are added oldest-first; we stop before exceeding the limit.
-    const prefix = "User's custom dictionary: ";
-    let compiled = prefix;
+    const grouped: Record<PersonalContextDialect, PersonalContext[]> = {
+      singlish: [],
+      english: [],
+      tanglish: [],
+    };
 
     for (const entry of slangEntries) {
-      const fragment = `'${entry.slangWord}' means '${entry.standardMeaning}'. `;
-      if (compiled.length + fragment.length > MAX_DICTIONARY_CHARS) {
-        break; // Adding this entry would exceed the limit
-      }
-      compiled += fragment;
+      grouped[this.normalizeDialectType(entry.dialectType)].push(entry);
     }
 
-    const result = compiled.trim();
+    // Build categorized dictionary sections while respecting hard char limits.
+    const chunks: string[] = ["User's custom dictionary by language:"];
+    let compiledLength = chunks[0].length;
+
+    for (const dialect of PERSONAL_CONTEXT_DIALECTS) {
+      const items = grouped[dialect];
+      if (items.length === 0) continue;
+
+      const lines: string[] = [];
+      let sectionLength = 0;
+
+      for (const entry of items) {
+        const line = `- '${entry.slangWord}' means '${entry.standardMeaning}'.\n`;
+        if (
+          compiledLength + sectionLength + line.length >
+          MAX_DICTIONARY_CHARS
+        ) {
+          break;
+        }
+        lines.push(line);
+        sectionLength += line.length;
+      }
+
+      if (lines.length === 0) {
+        continue;
+      }
+
+      const header = `\n${PERSONAL_CONTEXT_DIALECT_LABELS[dialect]}:\n`;
+      if (
+        compiledLength + header.length + sectionLength >
+        MAX_DICTIONARY_CHARS
+      ) {
+        break;
+      }
+
+      chunks.push(header);
+      chunks.push(...lines);
+      compiledLength += header.length + sectionLength;
+    }
+
+    const result = chunks.join('').trim();
     this.setCache(userId, result);
     return result;
   }

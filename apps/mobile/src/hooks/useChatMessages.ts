@@ -7,7 +7,6 @@ import apiClient, { retranslateMessage, processAudio, uploadMedia } from '../ser
 import type { ChatMessage } from '../components/chat/MessageBubble';
 import { useChatMessageCache } from '../contexts/ChatMessageCacheContext';
 import {
-  MAX_MEDIA_OUTBOX_RETRY_ATTEMPTS,
   type QueuedMediaJob,
   type QueuedMediaType,
   getMediaOutboxBackoffMs,
@@ -194,12 +193,28 @@ function buildQueuedMediaJob(
 ): QueuedMediaJob {
   const nowIso = new Date().toISOString();
 
+  if (payload.type === 'TEXT') {
+    return {
+      id: createClientTempId(),
+      groupId,
+      optimisticId,
+      mediaType: 'TEXT',
+      state: 'pending',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      attemptCount: 0,
+      nextAttemptAt: Date.now(),
+      text: payload.content,
+    };
+  }
+
   if (payload.type === 'AUDIO') {
     return {
       id: createClientTempId(),
       groupId,
       optimisticId,
       mediaType: 'AUDIO',
+      state: 'pending',
       createdAt: nowIso,
       updatedAt: nowIso,
       attemptCount: 0,
@@ -217,6 +232,7 @@ function buildQueuedMediaJob(
     groupId,
     optimisticId,
     mediaType: payload.type as Exclude<QueuedMediaType, 'AUDIO'>,
+    state: 'pending',
     createdAt: nowIso,
     updatedAt: nowIso,
     attemptCount: 0,
@@ -289,6 +305,8 @@ function historyToChatMessage(msg: HistoryMessage, currentUserId: string | null)
     confidenceScore: msg.confidenceScore ?? null,
     extractedActions: msg.extractedActions ?? null,
     isOptimistic: false,
+    sendStatus: 'sent',
+    sendFailureReason: null,
     isEdited: msg.isEdited ?? false,
     isTranslating: shouldMarkTranslating(
       isOwnMessage,
@@ -314,6 +332,8 @@ function serverEventToChatMessage(evt: NewMessageEvent, currentUserId: string | 
     confidenceScore: evt.confidenceScore ?? null,
     extractedActions: evt.extractedActions ?? null,
     isOptimistic: false,
+    sendStatus: 'sent',
+    sendFailureReason: null,
     isEdited: false,
     isTranslating: shouldMarkTranslating(
       isOwnMessage,
@@ -447,6 +467,37 @@ export function useChatMessages({
     setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
   }, []);
 
+  const markOptimisticMessageAsFailed = useCallback(
+    (optimisticId: string, reason: string) => {
+      setMessages((prev) =>
+        prev.map((message) => {
+          if (message.id !== optimisticId) return message;
+          return {
+            ...message,
+            isOptimistic: true,
+            sendStatus: 'failed',
+            sendFailureReason: reason,
+          };
+        }),
+      );
+    },
+    [],
+  );
+
+  const markOptimisticMessageAsSending = useCallback((optimisticId: string) => {
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (message.id !== optimisticId) return message;
+        return {
+          ...message,
+          isOptimistic: true,
+          sendStatus: 'sending',
+          sendFailureReason: null,
+        };
+      }),
+    );
+  }, []);
+
   const reconcileOptimisticMessage = useCallback(
     (
       optimisticId: string,
@@ -469,6 +520,8 @@ export function useChatMessages({
           id: serverMessageId,
           rawContent: serverRawContent || current.rawContent,
           isOptimistic: false,
+          sendStatus: 'sent',
+          sendFailureReason: null,
           isTranslating: forceTranslating || current.isTranslating,
         };
         return next;
@@ -526,6 +579,27 @@ export function useChatMessages({
     async (
       job: QueuedMediaJob,
     ): Promise<{ messageId: string; rawContent: string; forceTranslating: boolean }> => {
+      if (job.mediaType === 'TEXT') {
+        const text = job.text?.trim();
+        if (!text) {
+          throw new Error('Queued text is empty or unavailable');
+        }
+
+        const ack = await emitSendMessageWithAck({
+          groupId,
+          clientTempId: job.optimisticId,
+          contentType: 'TEXT',
+          rawContent: text,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        });
+
+        return {
+          messageId: ack.id,
+          rawContent: ack.rawContent || text,
+          forceTranslating: false,
+        };
+      }
+
       if (job.mediaType === 'AUDIO') {
         const localUri = job.audio?.localUri;
         if (!localUri) {
@@ -651,8 +725,13 @@ export function useChatMessages({
       let jobs = [...existingJobs];
 
       while (jobs.length > 0) {
+        const pendingIndex = jobs.findIndex((candidate) => candidate.state !== 'failed');
+        if (pendingIndex === -1) {
+          break;
+        }
+
         const now = Date.now();
-        const job = jobs[0];
+        const job = jobs[pendingIndex];
 
         if (!socket && job.mediaType !== 'AUDIO') {
           scheduleOutboxDrain(2_000);
@@ -666,7 +745,7 @@ export function useChatMessages({
 
         try {
           const sent = await sendQueuedMediaJob(job);
-          jobs = jobs.slice(1);
+          jobs = [...jobs.slice(0, pendingIndex), ...jobs.slice(pendingIndex + 1)];
           await persistOutboxJobs(jobs);
 
           reconcileOptimisticMessage(
@@ -676,32 +755,45 @@ export function useChatMessages({
             sent.forceTranslating,
           );
         } catch (error) {
-          const attemptCount = job.attemptCount + 1;
+          const failureReason = getMediaOutboxErrorMessage(error);
           const retryable = shouldRetryMediaOutboxError(error);
 
-          if (!retryable || attemptCount > MAX_MEDIA_OUTBOX_RETRY_ATTEMPTS) {
-            jobs = jobs.slice(1);
+          if (!retryable) {
+            const failedJob: QueuedMediaJob = {
+              ...job,
+              state: 'failed',
+              updatedAt: new Date().toISOString(),
+              nextAttemptAt: Date.now(),
+              lastError: failureReason,
+            };
+            jobs = [
+              ...jobs.slice(0, pendingIndex),
+              failedJob,
+              ...jobs.slice(pendingIndex + 1),
+            ];
             await persistOutboxJobs(jobs);
-            removeOptimisticMessage(job.optimisticId);
-
-            Alert.alert(
-              'Send Failed',
-              getMediaOutboxErrorMessage(error),
-            );
+            markOptimisticMessageAsFailed(job.optimisticId, failureReason);
             continue;
           }
 
+          const attemptCount = job.attemptCount + 1;
           const nextDelayMs = getMediaOutboxBackoffMs(attemptCount);
           const updatedJob: QueuedMediaJob = {
             ...job,
+            state: 'pending',
             attemptCount,
             updatedAt: new Date().toISOString(),
             nextAttemptAt: Date.now() + nextDelayMs,
-            lastError: getMediaOutboxErrorMessage(error),
+            lastError: failureReason,
           };
 
-          jobs = [updatedJob, ...jobs.slice(1)];
+          jobs = [
+            ...jobs.slice(0, pendingIndex),
+            updatedJob,
+            ...jobs.slice(pendingIndex + 1),
+          ];
           await persistOutboxJobs(jobs);
+          markOptimisticMessageAsSending(job.optimisticId);
           scheduleOutboxDrain(nextDelayMs);
           break;
         }
@@ -710,9 +802,10 @@ export function useChatMessages({
       outboxDrainInFlightRef.current = false;
     }
   }, [
+    markOptimisticMessageAsFailed,
+    markOptimisticMessageAsSending,
     persistOutboxJobs,
     reconcileOptimisticMessage,
-    removeOptimisticMessage,
     scheduleOutboxDrain,
     sendQueuedMediaJob,
     socket,
@@ -733,13 +826,35 @@ export function useChatMessages({
       outboxJobsRef.current = jobs;
       if (jobs.length === 0) return;
 
-      // Restore pending optimistic media messages after app restarts.
+      // Restore queued optimistic messages after app restarts.
       setMessages((prev) => {
         const existingIds = new Set(prev.map((message) => message.id));
         const restored: ChatMessage[] = [];
 
         for (const job of jobs) {
           if (existingIds.has(job.optimisticId)) continue;
+
+          const sendStatus = job.state === 'failed' ? 'failed' : 'sending';
+          const sendFailureReason = job.lastError ?? null;
+
+          if (job.mediaType === 'TEXT') {
+            const text = job.text?.trim();
+            if (!text) continue;
+            optimisticIdsRef.current.add(job.optimisticId);
+            restored.push({
+              id: job.optimisticId,
+              senderId: userId ?? '',
+              contentType: 'TEXT',
+              rawContent: text,
+              translations: null,
+              confidenceScore: null,
+              isOptimistic: true,
+              sendStatus,
+              sendFailureReason,
+              createdAt: job.createdAt,
+            });
+            continue;
+          }
 
           if (job.mediaType === 'AUDIO') {
             if (!job.audio?.localUri) continue;
@@ -755,6 +870,8 @@ export function useChatMessages({
               translations: null,
               confidenceScore: null,
               isOptimistic: true,
+              sendStatus,
+              sendFailureReason,
               createdAt: job.createdAt,
             });
             continue;
@@ -773,6 +890,8 @@ export function useChatMessages({
             translations: null,
             confidenceScore: null,
             isOptimistic: true,
+            sendStatus,
+            sendFailureReason,
             createdAt: job.createdAt,
           });
         }
@@ -784,8 +903,10 @@ export function useChatMessages({
       if (isConnected && socket && userId) {
         void drainOutboxRef.current();
       } else {
-        const nextDue = jobs[0]?.nextAttemptAt ?? Date.now();
-        scheduleOutboxDrain(Math.max(0, nextDue - Date.now()));
+        const nextPendingJob = jobs.find((job) => job.state !== 'failed');
+        if (nextPendingJob) {
+          scheduleOutboxDrain(Math.max(0, nextPendingJob.nextAttemptAt - Date.now()));
+        }
       }
     })();
 
@@ -968,20 +1089,34 @@ export function useChatMessages({
 
     // ── messageFailed ───────────────────────────────────────────────────
     const handleMessageFailed = (evt: { reason?: string }) => {
-      enqueueMessagesPatch((ctx) => {
-        const idx = ctx.messages.findIndex((m) => m.isOptimistic && m.senderId === userId);
-        if (idx === -1) return;
-
-        const optimisticId = ctx.messages[idx].id;
-        optimisticIdsRef.current.delete(optimisticId);
-        ctx.messages.splice(idx, 1);
-        ctx.indexById = buildMessageIndex(ctx.messages);
-        ctx.changed = true;
-      });
-      Alert.alert(
-        'Send Failed',
-        evt?.reason ?? 'Your message could not be sent. Please try again.',
+      const firstPendingJob = outboxJobsRef.current.find(
+        (job) => job.state !== 'failed',
       );
+      if (!firstPendingJob) {
+        console.warn('[useChatMessages] messageFailed with no pending outbox job', evt?.reason);
+        return;
+      }
+
+      const reason = evt?.reason ?? 'Your message could not be sent. Tap to retry.';
+
+      void (async () => {
+        const updatedJobs = outboxJobsRef.current.map((job) => {
+          if (job.optimisticId !== firstPendingJob.optimisticId) {
+            return job;
+          }
+
+          return {
+            ...job,
+            state: 'failed' as const,
+            updatedAt: new Date().toISOString(),
+            nextAttemptAt: Date.now(),
+            lastError: reason,
+          };
+        });
+
+        await persistOutboxJobs(updatedJobs);
+        markOptimisticMessageAsFailed(firstPendingJob.optimisticId, reason);
+      })();
     };
 
     socket.on('messageFailed', handleMessageFailed);
@@ -1080,7 +1215,16 @@ export function useChatMessages({
       socket.off('messageEdited', handleMessageEdited);
       socket.off('editFailed', handleEditFailed);
     };
-  }, [socket, isConnected, userId, groupId, editOriginalRef, enqueueMessagesPatch]);
+  }, [
+    socket,
+    isConnected,
+    userId,
+    groupId,
+    editOriginalRef,
+    enqueueMessagesPatch,
+    markOptimisticMessageAsFailed,
+    persistOutboxJobs,
+  ]);
 
   // ── 4. Reconnect catch-up: re-fetch latest page and merge missed messages ─
   const prevConnectedRef = useRef(false);
@@ -1127,6 +1271,8 @@ export function useChatMessages({
         translations: null,
         confidenceScore: null,
         isOptimistic: true,
+        sendStatus: 'sending',
+        sendFailureReason: null,
         createdAt: new Date().toISOString(),
       };
 
@@ -1136,27 +1282,6 @@ export function useChatMessages({
       onNewMessageRef.current?.();
 
       try {
-        if (payload.type === 'TEXT') {
-          if (!socket) {
-            throw new Error('Chat connection is unavailable');
-          }
-
-          const ack = await emitSendMessageWithAck({
-            groupId,
-            clientTempId: optimisticId,
-            contentType: 'TEXT',
-            rawContent: payload.content,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-
-          reconcileOptimisticMessage(
-            optimisticId,
-            ack.id,
-            ack.rawContent || payload.content,
-          );
-          return;
-        }
-
         if (payload.type === 'AUDIO' && !payload.localUri) {
           throw new Error('Audio recording path is missing');
         }
@@ -1185,20 +1310,50 @@ export function useChatMessages({
       }
     },
     [
-      emitSendMessageWithAck,
       groupId,
       persistOutboxJobs,
-      reconcileOptimisticMessage,
       removeOptimisticMessage,
       scheduleOutboxDrain,
-      socket,
       userId,
     ],
   );
 
-  // ── 6. Retry translation handler ──────────────────────────────────────────
+  const retryQueuedMessage = useCallback(
+    async (optimisticId: string): Promise<boolean> => {
+      const jobIndex = outboxJobsRef.current.findIndex(
+        (job) => job.optimisticId === optimisticId,
+      );
+      if (jobIndex === -1) return false;
+
+      const current = outboxJobsRef.current[jobIndex];
+      const updatedJob: QueuedMediaJob = {
+        ...current,
+        state: 'pending',
+        attemptCount: 0,
+        updatedAt: new Date().toISOString(),
+        nextAttemptAt: Date.now(),
+        lastError: undefined,
+      };
+
+      const nextJobs = [...outboxJobsRef.current];
+      nextJobs[jobIndex] = updatedJob;
+      await persistOutboxJobs(nextJobs);
+
+      markOptimisticMessageAsSending(optimisticId);
+      scheduleOutboxDrain(0);
+      return true;
+    },
+    [markOptimisticMessageAsSending, persistOutboxJobs, scheduleOutboxDrain],
+  );
+
+  // ── 6. Retry handler (send failures + translation retry) ─────────────────
   const handleRetry = useCallback(
     async (messageId: string) => {
+      const retriedQueuedMessage = await retryQueuedMessage(messageId);
+      if (retriedQueuedMessage) {
+        return;
+      }
+
       enqueueMessagesPatch((ctx) => updateMessageById(ctx, messageId, (m) => ({
         ...m,
         isRetrying: true,
@@ -1231,7 +1386,7 @@ export function useChatMessages({
         );
       }
     },
-    [enqueueMessagesPatch],
+    [enqueueMessagesPatch, retryQueuedMessage],
   );
 
   return {

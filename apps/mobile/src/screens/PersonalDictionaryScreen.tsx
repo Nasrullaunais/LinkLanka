@@ -1,13 +1,11 @@
 /**
- * PersonalDictionaryScreen — "My Dictionary"
+ * PersonalDictionaryScreen
  *
- * Lets users manage their custom slang words / meanings that are
- * injected into the LLM translation prompt for better accuracy.
- *
- * Standalone screen — kept separate from other screens so the team
- * member working on personal context can iterate independently.
+ * Language-scoped personal dictionary management:
+ * - 50 entries per language (Singlish, English, Tanglish)
+ * - 150 total entries across all language buckets
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,58 +29,147 @@ import {
   deletePersonalContext,
   fetchPersonalContext,
   fetchPersonalContextCount,
+  PERSONAL_CONTEXT_DIALECT_LABELS,
+  PERSONAL_CONTEXT_DIALECTS,
   updatePersonalContext,
+  type PersonalContextCount,
+  type PersonalContextDialect,
   type PersonalContextItem,
 } from '../services/personalContext';
+import { getApiErrorMessage } from '../utils/auth';
 import { useTheme } from '../contexts/ThemeContext';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'PersonalDictionary'>;
 
-const DIALECT_OPTIONS = [
-  { key: 'singlish', label: 'Singlish' },
-  { key: 'tanglish', label: 'Tanglish' },
-  { key: 'english', label: 'English' },
-] as const;
-
 const MAX_WORD_LENGTH = 100;
 const MAX_MEANING_LENGTH = 500;
+const FALLBACK_MAX_PER_LANGUAGE = 50;
+const FALLBACK_TOTAL_MAX = FALLBACK_MAX_PER_LANGUAGE * PERSONAL_CONTEXT_DIALECTS.length;
 
-// ── Component ────────────────────────────────────────────────────────────────
+function normalizeDialect(value: string | null | undefined): PersonalContextDialect {
+  if (!value) return 'english';
+  const normalized = value.toLowerCase();
+  if (PERSONAL_CONTEXT_DIALECTS.includes(normalized as PersonalContextDialect)) {
+    return normalized as PersonalContextDialect;
+  }
+  return 'english';
+}
+
+function buildFallbackCount(items: PersonalContextItem[]): PersonalContextCount {
+  const perLanguage = {
+    singlish: { count: 0, max: FALLBACK_MAX_PER_LANGUAGE, remaining: FALLBACK_MAX_PER_LANGUAGE },
+    english: { count: 0, max: FALLBACK_MAX_PER_LANGUAGE, remaining: FALLBACK_MAX_PER_LANGUAGE },
+    tanglish: { count: 0, max: FALLBACK_MAX_PER_LANGUAGE, remaining: FALLBACK_MAX_PER_LANGUAGE },
+  };
+
+  for (const item of items) {
+    const dialect = normalizeDialect(item.dialectType);
+    perLanguage[dialect].count += 1;
+  }
+
+  let totalCount = 0;
+  for (const dialect of PERSONAL_CONTEXT_DIALECTS) {
+    totalCount += perLanguage[dialect].count;
+    perLanguage[dialect].remaining = Math.max(0, perLanguage[dialect].max - perLanguage[dialect].count);
+  }
+
+  return {
+    count: totalCount,
+    max: FALLBACK_TOTAL_MAX,
+    totalCount,
+    totalMax: FALLBACK_TOTAL_MAX,
+    perLanguage,
+  };
+}
+
+function normalizeCountPayload(
+  payload: PersonalContextCount,
+  items: PersonalContextItem[],
+): PersonalContextCount {
+  const fallback = buildFallbackCount(items);
+  const maybePerLanguage = payload?.perLanguage;
+
+  if (!maybePerLanguage) {
+    return fallback;
+  }
+
+  const perLanguage = {
+    singlish: {
+      count: Number(maybePerLanguage.singlish?.count ?? 0),
+      max: Number(maybePerLanguage.singlish?.max ?? FALLBACK_MAX_PER_LANGUAGE),
+      remaining: Number(
+        maybePerLanguage.singlish?.remaining ??
+          Math.max(0, FALLBACK_MAX_PER_LANGUAGE - Number(maybePerLanguage.singlish?.count ?? 0)),
+      ),
+    },
+    english: {
+      count: Number(maybePerLanguage.english?.count ?? 0),
+      max: Number(maybePerLanguage.english?.max ?? FALLBACK_MAX_PER_LANGUAGE),
+      remaining: Number(
+        maybePerLanguage.english?.remaining ??
+          Math.max(0, FALLBACK_MAX_PER_LANGUAGE - Number(maybePerLanguage.english?.count ?? 0)),
+      ),
+    },
+    tanglish: {
+      count: Number(maybePerLanguage.tanglish?.count ?? 0),
+      max: Number(maybePerLanguage.tanglish?.max ?? FALLBACK_MAX_PER_LANGUAGE),
+      remaining: Number(
+        maybePerLanguage.tanglish?.remaining ??
+          Math.max(0, FALLBACK_MAX_PER_LANGUAGE - Number(maybePerLanguage.tanglish?.count ?? 0)),
+      ),
+    },
+  };
+
+  const totalCount = Number(payload.totalCount ?? payload.count ?? fallback.totalCount);
+  const totalMax = Number(payload.totalMax ?? payload.max ?? fallback.totalMax);
+
+  return {
+    count: totalCount,
+    max: totalMax,
+    totalCount,
+    totalMax,
+    perLanguage,
+  };
+}
+
 export default function PersonalDictionaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
 
-  // ── State ────────────────────────────────────────────────────────────────
   const [entries, setEntries] = useState<PersonalContextItem[]>([]);
-  const [count, setCount] = useState(0);
-  const [maxEntries, setMaxEntries] = useState(50);
+  const [countSummary, setCountSummary] = useState<PersonalContextCount>(
+    buildFallbackCount([]),
+  );
+  const [activeDialect, setActiveDialect] = useState<PersonalContextDialect>('singlish');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Modal state
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingEntry, setEditingEntry] = useState<PersonalContextItem | null>(
-    null,
-  );
+  const [editingEntry, setEditingEntry] = useState<PersonalContextItem | null>(null);
   const [wordInput, setWordInput] = useState('');
   const [meaningInput, setMeaningInput] = useState('');
-  const [dialectInput, setDialectInput] = useState<string | undefined>(
-    undefined,
-  );
+  const [dialectInput, setDialectInput] = useState<PersonalContextDialect>('singlish');
+  const [submitError, setSubmitError] = useState('');
 
-  // ── Data fetching ────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const [items, countData] = await Promise.all([
         fetchPersonalContext(),
         fetchPersonalContextCount(),
       ]);
-      setEntries(items);
-      setCount(countData.count);
-      setMaxEntries(countData.max);
-    } catch (err) {
-      console.error('[PersonalDictionary] Failed to load:', err);
-      Alert.alert('Error', 'Could not load your dictionary. Please try again.');
+
+      const normalizedItems: PersonalContextItem[] = items.map((item) => ({
+        ...item,
+        dialectType: normalizeDialect(item.dialectType),
+      }));
+
+      setEntries(normalizedItems);
+      setCountSummary(normalizeCountPayload(countData, normalizedItems));
+    } catch (error) {
+      Alert.alert(
+        'Error',
+        getApiErrorMessage(error, 'Could not load your dictionary. Please try again.'),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -92,72 +179,142 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
     loadData();
   }, [loadData]);
 
-  // ── Modal helpers ────────────────────────────────────────────────────────
+  const filteredEntries = useMemo(
+    () => entries.filter((item) => normalizeDialect(item.dialectType) === activeDialect),
+    [entries, activeDialect],
+  );
+
+  const activeBucket = countSummary.perLanguage[activeDialect];
+  const activeLanguageLabel = PERSONAL_CONTEXT_DIALECT_LABELS[activeDialect];
+  const isActiveBucketFull = activeBucket.count >= activeBucket.max;
+
   const openAddModal = useCallback(() => {
+    if (isActiveBucketFull) {
+      Alert.alert(
+        `${activeLanguageLabel} bucket is full`,
+        `You can save up to ${activeBucket.max} ${activeLanguageLabel} entries. Delete one before adding a new entry.`,
+      );
+      return;
+    }
+
     setEditingEntry(null);
     setWordInput('');
     setMeaningInput('');
-    setDialectInput(undefined);
+    setDialectInput(activeDialect);
+    setSubmitError('');
     setModalVisible(true);
-  }, []);
+  }, [activeBucket.max, activeDialect, activeLanguageLabel, isActiveBucketFull]);
 
   const openEditModal = useCallback((entry: PersonalContextItem) => {
-    setEditingEntry(entry);
+    const normalizedDialect = normalizeDialect(entry.dialectType);
+    setEditingEntry({ ...entry, dialectType: normalizedDialect });
     setWordInput(entry.slangWord);
     setMeaningInput(entry.standardMeaning);
-    setDialectInput(entry.dialectType ?? undefined);
+    setDialectInput(normalizedDialect);
+    setSubmitError('');
     setModalVisible(true);
   }, []);
 
   const closeModal = useCallback(() => {
     setModalVisible(false);
     setEditingEntry(null);
+    setSubmitError('');
   }, []);
 
-  // ── Submit (add or update) ───────────────────────────────────────────────
+  const duplicateInTargetLanguage = useMemo(() => {
+    const normalizedWord = wordInput.trim().toLowerCase();
+    if (!normalizedWord) return null;
+
+    return (
+      entries.find((entry) => {
+        if (editingEntry && entry.id === editingEntry.id) {
+          return false;
+        }
+
+        const sameDialect = normalizeDialect(entry.dialectType) === dialectInput;
+        const sameWord = entry.slangWord.trim().toLowerCase() === normalizedWord;
+        return sameDialect && sameWord;
+      }) ?? null
+    );
+  }, [entries, editingEntry, wordInput, dialectInput]);
+
+  const targetBucket = countSummary.perLanguage[dialectInput];
+  const editingDialect = editingEntry ? normalizeDialect(editingEntry.dialectType) : null;
+  const isChangingDialect = !!editingEntry && editingDialect !== dialectInput;
+  const isTargetBucketFullForSubmit =
+    targetBucket.count >= targetBucket.max && (!editingEntry || isChangingDialect);
+
+  const validationError = useMemo(() => {
+    const word = wordInput.trim();
+    const meaning = meaningInput.trim();
+
+    if (!word) return 'Enter a word or phrase.';
+    if (!meaning) return 'Enter the meaning.';
+
+    if (duplicateInTargetLanguage) {
+      return `"${word}" already exists in ${PERSONAL_CONTEXT_DIALECT_LABELS[dialectInput]}.`;
+    }
+
+    if (isTargetBucketFullForSubmit) {
+      return `${PERSONAL_CONTEXT_DIALECT_LABELS[dialectInput]} is full (${targetBucket.max}/${targetBucket.max}). Delete one entry before saving.`;
+    }
+
+    return '';
+  }, [
+    dialectInput,
+    duplicateInTargetLanguage,
+    isTargetBucketFullForSubmit,
+    meaningInput,
+    targetBucket.max,
+    wordInput,
+  ]);
+
+  const helperMessage = submitError || validationError;
+  const submitDisabled = isSubmitting || validationError.length > 0;
+
   const handleSubmit = useCallback(async () => {
     const word = wordInput.trim();
     const meaning = meaningInput.trim();
 
-    if (!word) {
-      Alert.alert('Missing word', 'Please enter a word or phrase.');
-      return;
-    }
-    if (!meaning) {
-      Alert.alert('Missing meaning', 'Please enter the meaning.');
+    if (validationError) {
+      setSubmitError(validationError);
       return;
     }
 
     setIsSubmitting(true);
+    setSubmitError('');
+
     try {
       if (editingEntry) {
-        // Update existing
-        await updatePersonalContext(
-          editingEntry.id,
-          meaning,
-          dialectInput ?? null,
-        );
+        await updatePersonalContext(editingEntry.id, meaning, dialectInput);
       } else {
-        // Add new
         await addPersonalContext(word, meaning, dialectInput);
       }
+
       closeModal();
       await loadData();
-    } catch (err: any) {
-      const message =
-        err?.response?.data?.message ?? 'Something went wrong. Please try again.';
-      Alert.alert('Error', Array.isArray(message) ? message[0] : message);
+    } catch (error) {
+      setSubmitError(
+        getApiErrorMessage(error, 'Could not save this dictionary entry. Please try again.'),
+      );
     } finally {
       setIsSubmitting(false);
     }
-  }, [wordInput, meaningInput, dialectInput, editingEntry, closeModal, loadData]);
+  }, [
+    closeModal,
+    dialectInput,
+    editingEntry,
+    loadData,
+    meaningInput,
+    validationError,
+    wordInput,
+  ]);
 
-  // ── Delete ───────────────────────────────────────────────────────────────
   const handleDelete = useCallback(
     (entry: PersonalContextItem) => {
       Alert.alert(
-        'Delete word',
-        `Remove "${entry.slangWord}" from your dictionary?`,
+        'Delete entry',
+        `Remove "${entry.slangWord}" from ${PERSONAL_CONTEXT_DIALECT_LABELS[normalizeDialect(entry.dialectType)]}?`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -167,9 +324,11 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
               try {
                 await deletePersonalContext(entry.id);
                 await loadData();
-              } catch (err) {
-                console.error('[PersonalDictionary] Delete failed:', err);
-                Alert.alert('Error', 'Could not delete the entry.');
+              } catch (error) {
+                Alert.alert(
+                  'Error',
+                  getApiErrorMessage(error, 'Could not delete this dictionary entry.'),
+                );
               }
             },
           },
@@ -179,84 +338,159 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
     [loadData],
   );
 
-  // ── Render entry ─────────────────────────────────────────────────────────
   const renderItem = useCallback(
-    ({ item }: { item: PersonalContextItem }) => (
-      <Pressable style={[styles.entryRow, { backgroundColor: colors.cardBg }]} onPress={() => openEditModal(item)}>
-        <View style={styles.entryContent}>
-          <View style={styles.entryHeader}>
-            <Text style={[styles.entryWord, { color: colors.text }]} numberOfLines={1}>
-              {item.slangWord}
-            </Text>
-            {item.dialectType && (
-              <View style={[styles.dialectBadge, { backgroundColor: colors.primaryFaded }]}>
-                <Text style={[styles.dialectBadgeText, { color: colors.primary }]}>
-                  {item.dialectType}
+    ({ item }: { item: PersonalContextItem }) => {
+      const itemDialect = normalizeDialect(item.dialectType);
+      const itemDialectLabel = PERSONAL_CONTEXT_DIALECT_LABELS[itemDialect];
+
+      return (
+        <Pressable
+          style={[styles.entryRow, { backgroundColor: colors.cardBg, borderColor: colors.border }]}
+          onPress={() => openEditModal(item)}
+        >
+          <View style={styles.entryContent}>
+            <View style={styles.entryHeader}>
+              <Text style={[styles.entryWord, { color: colors.text }]} numberOfLines={1}>
+                {item.slangWord}
+              </Text>
+              <View style={[styles.entryLanguageBadge, { backgroundColor: colors.primaryFaded }]}> 
+                <Text style={[styles.entryLanguageBadgeText, { color: colors.primary }]}>
+                  {itemDialectLabel}
                 </Text>
               </View>
-            )}
+            </View>
+            <Text style={[styles.entryMeaning, { color: colors.textSecondary }]} numberOfLines={2}>
+              {item.standardMeaning}
+            </Text>
           </View>
-          <Text style={[styles.entryMeaning, { color: colors.textSecondary }]} numberOfLines={2}>
-            {item.standardMeaning}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => handleDelete(item)}
-          hitSlop={12}
-          style={styles.deleteBtn}
-        >
-          <Ionicons name="trash-outline" size={20} color={colors.destructive} />
+
+          <Pressable
+            onPress={() => handleDelete(item)}
+            hitSlop={10}
+            style={styles.deleteButton}
+          >
+            <Ionicons name="trash-outline" size={20} color={colors.destructive} />
+          </Pressable>
         </Pressable>
-      </Pressable>
-    ),
-    [openEditModal, handleDelete, colors],
+      );
+    },
+    [colors, handleDelete, openEditModal],
   );
 
-  // ── Empty state ──────────────────────────────────────────────────────────
   const renderEmpty = useCallback(() => {
     if (isLoading) return null;
+
     return (
       <View style={styles.emptyContainer}>
         <Ionicons name="book-outline" size={64} color={colors.emptyIcon} />
-        <Text style={[styles.emptyTitle, { color: colors.emptyText }]}>No words yet</Text>
-        <Text style={[styles.emptySubtitle, { color: colors.emptyText }]}>
-          Add words or slang that you use.{'\n'}This helps translations
-          understand you better.
+        <Text style={[styles.emptyTitle, { color: colors.emptyText }]}>
+          No {activeLanguageLabel} entries yet
+        </Text>
+        <Text style={[styles.emptySubtitle, { color: colors.emptyText }]}> 
+          Save frequently used {activeLanguageLabel.toLowerCase()} words and phrases so translations stay accurate and personal.
         </Text>
       </View>
     );
-  }, [isLoading, colors]);
+  }, [activeLanguageLabel, colors.emptyIcon, colors.emptyText, isLoading]);
 
-  // ── Main render ──────────────────────────────────────────────────────────
+  const listHeader = (
+    <View style={styles.listHeaderContainer}>
+      <View style={[styles.totalCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}> 
+        <View style={styles.totalCardTopRow}>
+          <Text style={[styles.totalCardTitle, { color: colors.text }]}>Total Capacity</Text>
+          <Text style={[styles.totalCardValue, { color: colors.primary }]}> 
+            {countSummary.totalCount}/{countSummary.totalMax}
+          </Text>
+        </View>
+        <Text style={[styles.totalCardSubtitle, { color: colors.textSecondary }]}> 
+          50 entries per language bucket. You can store up to 150 entries in total.
+        </Text>
+      </View>
+
+      <View style={styles.languageTabsRow}>
+        {PERSONAL_CONTEXT_DIALECTS.map((dialect) => {
+          const languageCount = countSummary.perLanguage[dialect];
+          const selected = dialect === activeDialect;
+          const isFull = languageCount.count >= languageCount.max;
+
+          return (
+            <Pressable
+              key={dialect}
+              onPress={() => setActiveDialect(dialect)}
+              style={[
+                styles.languageTab,
+                {
+                  backgroundColor: selected ? colors.primaryFaded : colors.surface,
+                  borderColor: selected ? colors.primary : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.languageTabLabel,
+                  { color: selected ? colors.primary : colors.textSecondary },
+                ]}
+              >
+                {PERSONAL_CONTEXT_DIALECT_LABELS[dialect]}
+              </Text>
+              <Text style={[styles.languageTabCount, { color: selected ? colors.primary : colors.text }]}> 
+                {languageCount.count}/{languageCount.max}
+              </Text>
+              <Text
+                style={[
+                  styles.languageTabHint,
+                  { color: isFull ? colors.destructive : colors.textTertiary },
+                ]}
+              >
+                {isFull ? 'Full' : `${languageCount.remaining} left`}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}> 
+        {activeLanguageLabel} Entries
+      </Text>
+    </View>
+  );
+
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 12, backgroundColor: colors.headerBg }]}>
-        <Pressable onPress={() => navigation.goBack()} hitSlop={12}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View
+        style={[
+          styles.header,
+          { paddingTop: insets.top + 12, backgroundColor: colors.headerBg },
+        ]}
+      >
+        <Pressable onPress={() => navigation.goBack()} hitSlop={10}>
           <Ionicons name="arrow-back" size={24} color={colors.headerText} />
         </Pressable>
+
         <Text style={[styles.headerTitle, { color: colors.headerText }]}>My Dictionary</Text>
-        <View style={[styles.counterBadge, { backgroundColor: colors.headerAvatarBg }]}>
-          <Text style={[styles.counterText, { color: colors.headerText }]}>
-            {count}/{maxEntries}
+
+        <View style={[styles.headerCounter, { backgroundColor: colors.headerAvatarBg }]}> 
+          <Text style={[styles.headerCounterText, { color: colors.headerText }]}> 
+            {countSummary.totalCount}/{countSummary.totalMax}
           </Text>
         </View>
       </View>
 
-      {/* List */}
       {isLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.spinnerColor} />
         </View>
       ) : (
         <FlatList
-          data={entries}
+          data={filteredEntries}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          ListHeaderComponent={listHeader}
           ListEmptyComponent={renderEmpty}
           contentContainerStyle={[
             styles.listContent,
-            entries.length === 0 && styles.listContentEmpty,
+            filteredEntries.length === 0 && styles.listContentEmpty,
+            { paddingBottom: insets.bottom + 120 },
           ]}
           showsVerticalScrollIndicator={false}
           removeClippedSubviews
@@ -266,17 +500,46 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
         />
       )}
 
-      {/* Add button */}
       {!isLoading && (
-        <Pressable
-          style={[styles.fab, { bottom: insets.bottom + 20, backgroundColor: colors.fabBg, shadowColor: colors.fabShadow }]}
-          onPress={openAddModal}
+        <View
+          style={[
+            styles.bottomActionContainer,
+            {
+              backgroundColor: colors.background,
+              paddingBottom: Math.max(12, insets.bottom + 4),
+            },
+          ]}
         >
-          <Ionicons name="add" size={28} color="#fff" />
-        </Pressable>
+          <Pressable
+            onPress={openAddModal}
+            disabled={isActiveBucketFull}
+            style={[
+              styles.addButton,
+              {
+                backgroundColor: isActiveBucketFull ? colors.border : colors.primary,
+                borderColor: isActiveBucketFull ? colors.border : colors.primary,
+              },
+            ]}
+          >
+            <Ionicons
+              name={isActiveBucketFull ? 'alert-circle-outline' : 'add-circle-outline'}
+              size={18}
+              color={isActiveBucketFull ? colors.textSecondary : '#fff'}
+            />
+            <Text
+              style={[
+                styles.addButtonText,
+                { color: isActiveBucketFull ? colors.textSecondary : '#fff' },
+              ]}
+            >
+              {isActiveBucketFull
+                ? `${activeLanguageLabel} bucket full (${activeBucket.max}/${activeBucket.max})`
+                : `Add ${activeLanguageLabel} entry`}
+            </Text>
+          </Pressable>
+        </View>
       )}
 
-      {/* ── Add / Edit Modal ──────────────────────────────────────────────── */}
       <Modal
         visible={modalVisible}
         animationType="slide"
@@ -287,97 +550,138 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={[styles.modalOverlay, { backgroundColor: colors.overlayBg }]}
         >
-          <View style={[styles.modalContent, { backgroundColor: colors.modalBg }]}>
-            {/* Modal header */}
+          <View style={[styles.modalContent, { backgroundColor: colors.modalBg }]}> 
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>
-                {editingEntry ? 'Edit Word' : 'Add Word'}
+              <Text style={[styles.modalTitle, { color: colors.text }]}> 
+                {editingEntry ? 'Edit Dictionary Entry' : 'Add Dictionary Entry'}
               </Text>
-              <Pressable onPress={closeModal} hitSlop={12}>
+              <Pressable onPress={closeModal} hitSlop={10}>
                 <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
             </View>
 
-            {/* Word input */}
+            <Text style={[styles.label, { color: colors.modalText }]}>Language</Text>
+            <View style={styles.modalDialectRow}>
+              {PERSONAL_CONTEXT_DIALECTS.map((dialect) => {
+                const selected = dialect === dialectInput;
+                return (
+                  <Pressable
+                    key={dialect}
+                    onPress={() => {
+                      setDialectInput(dialect);
+                      if (submitError) setSubmitError('');
+                    }}
+                    style={[
+                      styles.modalDialectChip,
+                      {
+                        backgroundColor: selected ? colors.primaryFaded : colors.surface,
+                        borderColor: selected ? colors.primary : colors.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.modalDialectChipText,
+                        { color: selected ? colors.primary : colors.textSecondary },
+                      ]}
+                    >
+                      {PERSONAL_CONTEXT_DIALECT_LABELS[dialect]}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.bucketHint, { color: colors.textTertiary }]}> 
+              {PERSONAL_CONTEXT_DIALECT_LABELS[dialectInput]} bucket: {targetBucket.count}/{targetBucket.max} used
+            </Text>
+
             <Text style={[styles.label, { color: colors.modalText }]}>Word or Phrase</Text>
             <TextInput
               style={[
                 styles.input,
-                { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.inputText },
-                editingEntry != null && [styles.inputDisabled, { backgroundColor: colors.surface, color: colors.textTertiary }],
+                {
+                  backgroundColor: colors.inputBg,
+                  borderColor: colors.border,
+                  color: colors.inputText,
+                },
+                editingEntry != null && {
+                  backgroundColor: colors.surface,
+                  color: colors.textTertiary,
+                },
               ]}
               value={wordInput}
-              onChangeText={setWordInput}
-              placeholder='e.g. "machan"'
+              onChangeText={(value) => {
+                setWordInput(value);
+                if (submitError) setSubmitError('');
+              }}
+              placeholder="e.g. machan"
               placeholderTextColor={colors.inputPlaceholder}
               maxLength={MAX_WORD_LENGTH}
               autoCapitalize="none"
               editable={editingEntry == null}
             />
-            <Text style={[styles.charCounter, { color: colors.textTertiary }]}>
+            <Text style={[styles.charCounter, { color: colors.textTertiary }]}> 
               {wordInput.length}/{MAX_WORD_LENGTH}
             </Text>
+            {editingEntry ? (
+              <Text style={[styles.immutableHint, { color: colors.textTertiary }]}> 
+                Word cannot be changed after creation.
+              </Text>
+            ) : null}
 
-            {/* Meaning input */}
             <Text style={[styles.label, { color: colors.modalText }]}>Meaning</Text>
             <TextInput
-              style={[styles.input, styles.inputMultiline, { backgroundColor: colors.inputBg, borderColor: colors.border, color: colors.inputText }]}
+              style={[
+                styles.input,
+                styles.multilineInput,
+                {
+                  backgroundColor: colors.inputBg,
+                  borderColor: colors.border,
+                  color: colors.inputText,
+                },
+              ]}
               value={meaningInput}
-              onChangeText={setMeaningInput}
-              placeholder='e.g. "friend / buddy"'
+              onChangeText={(value) => {
+                setMeaningInput(value);
+                if (submitError) setSubmitError('');
+              }}
+              placeholder="e.g. friend / buddy"
               placeholderTextColor={colors.inputPlaceholder}
               maxLength={MAX_MEANING_LENGTH}
               multiline
               numberOfLines={3}
               textAlignVertical="top"
             />
-            <Text style={[styles.charCounter, { color: colors.textTertiary }]}>
+            <Text style={[styles.charCounter, { color: colors.textTertiary }]}> 
               {meaningInput.length}/{MAX_MEANING_LENGTH}
             </Text>
 
-            {/* Dialect chips */}
-            <Text style={[styles.label, { color: colors.modalText }]}>Dialect (optional)</Text>
-            <View style={styles.dialectRow}>
-              {DIALECT_OPTIONS.map((d) => (
-                <Pressable
-                  key={d.key}
-                  onPress={() =>
-                    setDialectInput(dialectInput === d.key ? undefined : d.key)
-                  }
-                  style={[
-                    styles.dialectChip,
-                    { borderColor: colors.border, backgroundColor: colors.surface },
-                    dialectInput === d.key && [styles.dialectChipSelected, { borderColor: colors.primary, backgroundColor: colors.primaryFaded }],
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.dialectChipText,
-                      { color: colors.textSecondary },
-                      dialectInput === d.key && [styles.dialectChipTextSelected, { color: colors.primary }],
-                    ]}
-                  >
-                    {d.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+            {helperMessage ? (
+              <Text style={[styles.formErrorText, { color: colors.destructive }]}> 
+                {helperMessage}
+              </Text>
+            ) : null}
 
-            {/* Submit button */}
             <Pressable
               onPress={handleSubmit}
-              disabled={isSubmitting}
-              style={({ pressed }) => [
-                styles.submitBtn,
-                { backgroundColor: colors.primary },
-                pressed && styles.submitBtnPressed,
+              disabled={submitDisabled}
+              style={[
+                styles.submitButton,
+                {
+                  backgroundColor: submitDisabled ? colors.border : colors.primary,
+                },
               ]}
             >
               {isSubmitting ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.submitBtnText}>
-                  {editingEntry ? 'Save Changes' : 'Add Word'}
+                <Text
+                  style={[
+                    styles.submitButtonText,
+                    { color: submitDisabled ? colors.textSecondary : '#fff' },
+                  ]}
+                >
+                  {editingEntry ? 'Save Changes' : 'Add Entry'}
                 </Text>
               )}
             </Pressable>
@@ -388,11 +692,9 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
   );
 }
 
-// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1 },
 
-  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -401,51 +703,130 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   headerTitle: { fontSize: 18, fontWeight: '700' },
-  counterBadge: {
+  headerCounter: {
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
   },
-  counterText: { fontSize: 13, fontWeight: '600' },
+  headerCounterText: { fontSize: 13, fontWeight: '700' },
 
-  // Loading
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
-  // List
-  listContent: { padding: 16, paddingBottom: 100 },
-  listContentEmpty: { flexGrow: 1 },
+  listContent: {
+    padding: 16,
+  },
+  listContentEmpty: {
+    flexGrow: 1,
+  },
+  listHeaderContainer: {
+    marginBottom: 8,
+  },
 
-  // Entry row
+  totalCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 12,
+  },
+  totalCardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  totalCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  totalCardValue: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  totalCardSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  languageTabsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  languageTab: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  languageTabLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  languageTabCount: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  languageTabHint: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+
   entryRow: {
     flexDirection: 'row',
     alignItems: 'center',
     borderRadius: 12,
+    borderWidth: 1,
     padding: 14,
     marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
   },
-  entryContent: { flex: 1, marginRight: 12 },
-  entryHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  entryWord: { fontSize: 16, fontWeight: '700', flexShrink: 1 },
-  dialectBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+  entryContent: {
+    flex: 1,
+    marginRight: 10,
+  },
+  entryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  entryWord: {
+    fontSize: 16,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  entryLanguageBadge: {
     borderRadius: 8,
     marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
-  dialectBadgeText: { fontSize: 11, fontWeight: '600' },
-  entryMeaning: { fontSize: 14, lineHeight: 20 },
-  deleteBtn: { padding: 6 },
+  entryLanguageBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  entryMeaning: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  deleteButton: {
+    padding: 4,
+  },
 
-  // Empty state
   emptyContainer: {
     flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 32,
   },
   emptyTitle: {
@@ -453,29 +834,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 16,
     marginBottom: 8,
+    textAlign: 'center',
   },
   emptySubtitle: {
     fontSize: 14,
-    textAlign: 'center',
     lineHeight: 20,
+    textAlign: 'center',
   },
 
-  // FAB
-  fab: {
+  bottomActionContainer: {
     position: 'absolute',
-    right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  addButton: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  addButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
 
-  // Modal
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -483,24 +871,46 @@ const styles = StyleSheet.create({
   modalContent: {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: 24,
+    padding: 20,
     paddingBottom: Platform.OS === 'ios' ? 40 : 24,
   },
   modalHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
-  modalTitle: { fontSize: 18, fontWeight: '700' },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
 
-  // Form
   label: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 6,
-    marginTop: 4,
   },
+  modalDialectRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  modalDialectChip: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  modalDialectChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  bucketHint: {
+    fontSize: 12,
+    marginBottom: 12,
+  },
+
   input: {
     borderWidth: 1,
     borderRadius: 10,
@@ -508,39 +918,32 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
   },
-  inputMultiline: {
-    minHeight: 80,
+  multilineInput: {
+    minHeight: 86,
     paddingTop: 12,
   },
-  inputDisabled: {},
-
   charCounter: {
-    fontSize: 11,
     alignSelf: 'flex-end',
+    fontSize: 11,
+    marginTop: 4,
     marginBottom: 8,
-    marginTop: 2,
   },
-  dialectRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 20,
+  immutableHint: {
+    fontSize: 11,
+    marginBottom: 10,
   },
-  dialectChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    borderWidth: 1.5,
+  formErrorText: {
+    fontSize: 13,
+    marginBottom: 12,
   },
-  dialectChipSelected: {},
-  dialectChipText: { fontSize: 13, fontWeight: '500' },
-  dialectChipTextSelected: { fontWeight: '700' },
 
-  // Submit
-  submitBtn: {
-    paddingVertical: 14,
+  submitButton: {
     borderRadius: 12,
+    paddingVertical: 14,
     alignItems: 'center',
   },
-  submitBtnPressed: { opacity: 0.85 },
-  submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  submitButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
 });

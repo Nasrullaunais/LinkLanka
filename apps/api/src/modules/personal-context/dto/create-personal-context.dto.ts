@@ -1,4 +1,7 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+import { PERSONAL_CONTEXT_DIALECTS } from '../personal-context.constants';
 
 export class CreatePersonalContextDto {
   @IsString()
@@ -11,8 +14,12 @@ export class CreatePersonalContextDto {
   @MaxLength(500, { message: 'Meaning must be at most 500 characters.' })
   standardMeaning!: string;
 
-  @IsOptional()
   @IsString()
-  @MaxLength(50, { message: 'Dialect type must be at most 50 characters.' })
-  dialectType?: string;
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.toLowerCase() : value,
+  )
+  @IsIn(PERSONAL_CONTEXT_DIALECTS, {
+    message: 'Dialect type must be one of: singlish, english, tanglish.',
+  })
+  dialectType!: string;
 }

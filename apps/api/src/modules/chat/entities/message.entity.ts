@@ -56,6 +56,14 @@ export class Message {
   @Column({ type: 'text', name: 'raw_content', nullable: false })
   rawContent!: string;
 
+  @Column({
+    type: 'varchar',
+    name: 'client_temp_id',
+    length: 64,
+    nullable: true,
+  })
+  clientTempId: string | null;
+
   @Column({ type: 'text', nullable: true })
   transcription: string;
 

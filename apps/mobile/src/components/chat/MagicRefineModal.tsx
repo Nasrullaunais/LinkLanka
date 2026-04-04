@@ -24,7 +24,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { isAxiosError, isCancel } from 'axios';
 
 import {
-  DialectSuggestionResult,
   DialectTargetLanguage,
   DialectTargetTone,
   refineTextV2,
@@ -252,7 +251,6 @@ export default function MagicRefineModal({
   const [selectedLanguage, setSelectedLanguage] =
     useState<DialectTargetLanguage | null>(null);
   const [selectedTone, setSelectedTone] = useState<DialectTargetTone | null>(null);
-  const [suggestion, setSuggestion] = useState<DialectSuggestionResult | null>(null);
   const [isDetecting, setIsDetecting] = useState(false);
   const [detectError, setDetectError] = useState<string | null>(null);
   const [refinedText, setRefinedText] = useState<string | null>(null);
@@ -337,12 +335,10 @@ export default function MagicRefineModal({
 
     try {
       const result = await suggestDialectOptions(text, controller.signal);
-      setSuggestion(result);
       setSelectedLanguage(result.suggestedTargetLanguages[0] ?? 'english');
       setSelectedTone(result.suggestedTones[0] ?? 'casual');
     } catch (err) {
       applyApiError(err, setDetectError);
-      setSuggestion(null);
       setSelectedLanguage('english');
       setSelectedTone('casual');
     } finally {
@@ -381,7 +377,6 @@ export default function MagicRefineModal({
     if (!visible) return;
 
     isAnimatingOutRef.current = false;
-    setSuggestion(null);
     setIsDetecting(false);
     setDetectError(null);
     setRefinedText(null);

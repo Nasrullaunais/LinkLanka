@@ -5,6 +5,7 @@ import {
   Controller,
   Delete,
   Get,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -38,8 +39,19 @@ export class PersonalContextController {
   // ── Get current count and maximum allowed ────────────────────────────────
   @Get('count')
   async getCount(@Request() req: AuthRequest) {
-    const count = await this.personalContextService.countByUser(req.user.sub);
-    return { count, max: this.personalContextService.maxEntriesPerUser };
+    const summary = await this.personalContextService.getCountSummary(
+      req.user.sub,
+    );
+
+    return {
+      // Backward compatible fields.
+      count: summary.totalCount,
+      max: summary.totalMax,
+      // Explicit fields for the per-language UX.
+      totalCount: summary.totalCount,
+      totalMax: summary.totalMax,
+      perLanguage: summary.perLanguage,
+    };
   }
 
   // ── Add a new dictionary entry ───────────────────────────────────────────
@@ -49,23 +61,32 @@ export class PersonalContextController {
     @Body() dto: CreatePersonalContextDto,
   ) {
     const userId = req.user.sub;
+    const dialectType = this.personalContextService.normalizeDialectType(
+      dto.dialectType,
+    );
 
-    // Check word limit
-    const count = await this.personalContextService.countByUser(userId);
-    if (count >= this.personalContextService.maxEntriesPerUser) {
+    const dialectCount =
+      await this.personalContextService.countByUserAndDialect(
+        userId,
+        dialectType,
+      );
+
+    if (dialectCount >= this.personalContextService.maxEntriesPerLanguage) {
       throw new BadRequestException(
-        `You have reached the maximum of ${this.personalContextService.maxEntriesPerUser} dictionary entries. Delete an existing entry before adding a new one.`,
+        `You have reached the maximum of ${this.personalContextService.maxEntriesPerLanguage} ${dialectType} dictionary entries. Delete an existing ${dialectType} entry before adding a new one.`,
       );
     }
 
-    // Check for duplicate word
+    // Check for duplicate word in the same language bucket.
     const existing = await this.personalContextService.findByUserAndWord(
       userId,
       dto.slangWord,
+      dialectType,
     );
+
     if (existing) {
       throw new ConflictException(
-        `You already have a dictionary entry for "${dto.slangWord}". Edit the existing entry instead.`,
+        `You already have a ${dialectType} dictionary entry for "${dto.slangWord}". Edit the existing entry instead.`,
       );
     }
 
@@ -73,7 +94,7 @@ export class PersonalContextController {
       userId,
       dto.slangWord,
       dto.standardMeaning,
-      dto.dialectType,
+      dialectType,
     );
   }
 
@@ -84,7 +105,60 @@ export class PersonalContextController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdatePersonalContextDto,
   ) {
-    return this.personalContextService.updateEntry(id, req.user.sub, dto);
+    const userId = req.user.sub;
+    const existingEntry = await this.personalContextService.findOneByUser(
+      id,
+      userId,
+    );
+
+    if (!existingEntry) {
+      throw new NotFoundException(
+        'Dictionary entry not found or does not belong to you.',
+      );
+    }
+
+    const currentDialect = this.personalContextService.normalizeDialectType(
+      existingEntry.dialectType,
+    );
+
+    const nextDialect =
+      dto.dialectType !== undefined
+        ? this.personalContextService.normalizeDialectType(dto.dialectType)
+        : currentDialect;
+
+    if (nextDialect !== currentDialect) {
+      const targetDialectCount =
+        await this.personalContextService.countByUserAndDialect(
+          userId,
+          nextDialect,
+        );
+
+      if (
+        targetDialectCount >= this.personalContextService.maxEntriesPerLanguage
+      ) {
+        throw new BadRequestException(
+          `You have reached the maximum of ${this.personalContextService.maxEntriesPerLanguage} ${nextDialect} dictionary entries. Delete an existing ${nextDialect} entry before moving this one.`,
+        );
+      }
+
+      const duplicateInTargetDialect =
+        await this.personalContextService.findByUserAndWord(
+          userId,
+          existingEntry.slangWord,
+          nextDialect,
+        );
+
+      if (duplicateInTargetDialect && duplicateInTargetDialect.id !== id) {
+        throw new ConflictException(
+          `You already have a ${nextDialect} dictionary entry for "${existingEntry.slangWord}".`,
+        );
+      }
+    }
+
+    return this.personalContextService.updateEntry(id, userId, {
+      ...dto,
+      dialectType: dto.dialectType !== undefined ? nextDialect : undefined,
+    });
   }
 
   // ── Delete an entry ──────────────────────────────────────────────────────
