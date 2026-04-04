@@ -25,6 +25,10 @@ services:
         value: "30000"
       - key: TRANSLATION_TIMEOUT_MS_MEDIA
         value: "60000"
+      - key: TTS_MANDATORY_ENGLISH_RETRIES
+        value: "1"
+      - key: DOMINANT_LANGUAGE_LOW_CONFIDENCE_THRESHOLD
+        value: "65"
       - key: JWT_SECRET
         generateValue: true
       - key: GEMINI_API_KEY

@@ -75,17 +75,49 @@ export default function ProfileScreen({ navigation }: Props) {
 
     if (result.canceled || !result.assets[0]) return;
 
+    const selectedAsset = result.assets[0];
+    const originalUri = selectedAsset.uri;
+    const originalMimeType = inferProfileImageMime(originalUri);
+
     setIsUploadingPic(true);
     try {
-      // Compress the image before uploading: max 800px, 70% quality
-      const compressedUri = await Compressor.compress(result.assets[0].uri, {
-        maxWidth: 800,
-        maxHeight: 800,
-        quality: 0.7,
-      });
+      let uploadUri = originalUri;
+      let uploadMimeType = originalMimeType;
 
-      const mimeType = inferProfileImageMime(compressedUri);
-      const uploaded = await uploadProfilePicture(compressedUri, mimeType);
+      try {
+        // Compress before upload to reduce payload size and upload time.
+        uploadUri = await Compressor.compress(originalUri, {
+          maxWidth: 800,
+          maxHeight: 800,
+          quality: 0.7,
+        });
+        uploadMimeType = inferProfileImageMime(uploadUri);
+      } catch (compressionError) {
+        console.warn(
+          '[ProfileScreen] Image compression failed, uploading original image instead:',
+          compressionError,
+        );
+      }
+
+      let uploaded;
+      try {
+        uploaded = await uploadProfilePicture(uploadUri, uploadMimeType);
+      } catch (uploadError) {
+        if (uploadUri === originalUri) {
+          throw uploadError;
+        }
+
+        console.warn(
+          '[ProfileScreen] Compressed upload failed, retrying original image:',
+          uploadError,
+        );
+        uploaded = await uploadProfilePicture(originalUri, originalMimeType);
+      }
+
+      if (!uploaded.url && uploadUri !== originalUri) {
+        uploaded = await uploadProfilePicture(originalUri, originalMimeType);
+      }
+
       if (uploaded.url) {
         setPendingAvatarUrl(uploaded.url);
       }

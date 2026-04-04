@@ -55,6 +55,9 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
   statusRef.current = status;
   const activeUriRef = useRef(activeUri);
   activeUriRef.current = activeUri;
+  const prevPlayingRef = useRef(false);
+  const prevFractionRef = useRef(0);
+  const pauseRequestedRef = useRef(false);
 
   // ── SharedValues: the ONLY channel consumers observe ───────────────────
   const activeMessageId = useSharedValue<string | null>(null);
@@ -71,11 +74,36 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
     currentTimeSV.value = status.currentTime;
     durationSV.value = status.duration;
 
-    if (status.duration > 0) {
-      const p = Math.min(1, status.currentTime / status.duration);
-      smoothProgress.value = status.playing
-        ? withTiming(p, { duration: 100 })
-        : p;
+    const duration = status.duration;
+    const current = status.currentTime;
+    const fraction = duration > 0 ? Math.min(1, Math.max(0, current / duration)) : 0;
+    const wasPlaying = prevPlayingRef.current;
+    const justStopped = wasPlaying && !status.playing;
+
+    if (duration > 0) {
+      if (status.playing) {
+        const remainingMs = Math.max(0, Math.round((duration - current) * 1000));
+        smoothProgress.value = withTiming(1, { duration: Math.max(80, remainingMs) });
+      } else if (justStopped) {
+        const endedNaturally =
+          !pauseRequestedRef.current && Math.max(fraction, prevFractionRef.current) >= 0.97;
+        smoothProgress.value = endedNaturally ? 1 : fraction;
+      } else {
+        smoothProgress.value = fraction;
+      }
+
+      prevFractionRef.current =
+        !status.playing && justStopped && !pauseRequestedRef.current && Math.max(fraction, prevFractionRef.current) >= 0.97
+          ? 1
+          : fraction;
+    } else if (!status.playing) {
+      smoothProgress.value = 0;
+      prevFractionRef.current = 0;
+    }
+
+    prevPlayingRef.current = status.playing;
+    if (!status.playing) {
+      pauseRequestedRef.current = false;
     }
   }, [status.playing, status.currentTime, status.duration, isPlayingSV, currentTimeSV, durationSV, smoothProgress]);
 
@@ -98,6 +126,7 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
       if (uri !== activeUriRef.current) {
         setActiveUri(uri);
         smoothProgress.value = 0;
+        prevFractionRef.current = 0;
         // useAudioPlayer will create a new player for this URI.
         // The auto-play effect below starts playback once it loads.
       } else {
@@ -127,11 +156,13 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
   }, [activeUri]);
 
   const pause = useCallback(() => {
+    pauseRequestedRef.current = true;
     playerRef.current.pause();
   }, []);
 
   const toggle = useCallback((messageId: string, uri: string) => {
     if (activeMessageId.value === messageId && statusRef.current.playing) {
+      pauseRequestedRef.current = true;
       playerRef.current.pause();
     } else {
       play(messageId, uri);

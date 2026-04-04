@@ -45,11 +45,21 @@ describe('TranslationService', () => {
     jest.restoreAllMocks();
   });
 
-  function createService(ttsMaxConcurrency?: string): TranslationService {
+  function createService(options?: {
+    ttsMaxConcurrency?: string;
+    mandatoryEnglishRetries?: string;
+    dominantLanguageLowConfidenceThreshold?: string;
+  }): TranslationService {
     const configService = {
       getOrThrow: jest.fn().mockReturnValue('fake-gemini-key'),
       get: jest.fn().mockImplementation((key: string) => {
-        if (key === 'TTS_MAX_CONCURRENCY') return ttsMaxConcurrency;
+        if (key === 'TTS_MAX_CONCURRENCY') return options?.ttsMaxConcurrency;
+        if (key === 'TTS_MANDATORY_ENGLISH_RETRIES') {
+          return options?.mandatoryEnglishRetries;
+        }
+        if (key === 'DOMINANT_LANGUAGE_LOW_CONFIDENCE_THRESHOLD') {
+          return options?.dominantLanguageLowConfidenceThreshold;
+        }
         if (key === 'BASE_URL') return 'http://localhost:3000';
         return undefined;
       }),
@@ -63,21 +73,17 @@ describe('TranslationService', () => {
   }
 
   it('keeps partial successes when one language generation fails', async () => {
-    const service = createService('2');
+    const service = createService({ ttsMaxConcurrency: '2' });
 
     const generateSpeechSpy = jest
-      .spyOn(
-        service as unknown as { generateSpeechWav: unknown },
-        'generateSpeechWav' as never,
-      )
-      .mockImplementation(
-        (params: { language: SupportedLanguage }): Promise<Buffer> => {
-          if (params.language === 'tanglish') {
-            throw new Error('simulated provider failure');
-          }
-          return Promise.resolve(Buffer.from('pcm-bytes'));
-        },
-      );
+      .spyOn(service as any, 'generateSpeechWav')
+      .mockImplementation((params: unknown): Promise<Buffer> => {
+        const language = (params as { language?: SupportedLanguage }).language;
+        if (language === 'tanglish') {
+          throw new Error('simulated provider failure');
+        }
+        return Promise.resolve(Buffer.from('pcm-bytes'));
+      });
 
     const output = await service.generateTranslatedAudioFiles({
       translations: baseTranslations,
@@ -98,16 +104,13 @@ describe('TranslationService', () => {
   });
 
   it('honors TTS_MAX_CONCURRENCY cap while processing jobs', async () => {
-    const service = createService('2');
+    const service = createService({ ttsMaxConcurrency: '2' });
 
     let active = 0;
     let maxActive = 0;
 
     const generateSpeechSpy = jest
-      .spyOn(
-        service as unknown as { generateSpeechWav: unknown },
-        'generateSpeechWav' as never,
-      )
+      .spyOn(service as any, 'generateSpeechWav')
       .mockImplementation(async (): Promise<Buffer> => {
         active += 1;
         if (active > maxActive) maxActive = active;
@@ -130,16 +133,13 @@ describe('TranslationService', () => {
   });
 
   it('falls back to safe default concurrency when env value is invalid', async () => {
-    const service = createService('invalid');
+    const service = createService({ ttsMaxConcurrency: 'invalid' });
 
     let active = 0;
     let maxActive = 0;
 
     jest
-      .spyOn(
-        service as unknown as { generateSpeechWav: unknown },
-        'generateSpeechWav' as never,
-      )
+      .spyOn(service as any, 'generateSpeechWav')
       .mockImplementation(async (): Promise<Buffer> => {
         active += 1;
         if (active > maxActive) maxActive = active;
@@ -183,5 +183,112 @@ describe('TranslationService', () => {
     });
 
     expect(result.translations.tanglish).toBe('Adei epdi iruka?');
+  });
+
+  it('arbitrates to singlish when singlish cues dominate with english words', async () => {
+    const service = createService();
+
+    mockInvoke.mockResolvedValueOnce({
+      transcription: 'Machan can we do this now hari, api yamu',
+      translations: {
+        english: 'Machan, can we do this now? Let us go.',
+        singlish: 'Machan dan meka karamu hari, api yamu',
+        tanglish: 'Machi ippo idha pannalama, seri polaam',
+      },
+      detectedLanguage: 'mixed',
+      originalTone: 'casual',
+      confidenceScore: 91,
+      extractedActions: [],
+    });
+
+    const result = await service.translateIntent({
+      rawText: 'Machan can we do this now hari, api yamu',
+      chatHistory: [],
+      userDictionary: '',
+    });
+
+    expect(result.detectedLanguage).toBe('singlish');
+  });
+
+  it('falls back to mixed when detection confidence is low', async () => {
+    const service = createService();
+
+    mockInvoke.mockResolvedValueOnce({
+      transcription: 'Machan lets meet tomorrow hari',
+      translations: {
+        english: 'Machan, let us meet tomorrow.',
+        singlish: 'Machan heta hambemu hari',
+        tanglish: 'Machi nalaikku sandhippom seri',
+      },
+      detectedLanguage: 'singlish',
+      originalTone: 'neutral',
+      confidenceScore: 42,
+      extractedActions: [],
+    });
+
+    const result = await service.translateIntent({
+      rawText: 'Machan lets meet tomorrow hari',
+      chatHistory: [],
+      userDictionary: '',
+    });
+
+    expect(result.detectedLanguage).toBe('mixed');
+  });
+
+  it('routes singlish dominant audio generation to english and tanglish only', async () => {
+    const service = createService({ ttsMaxConcurrency: '1' });
+
+    const generateSpeechSpy = jest
+      .spyOn(service as any, 'generateSpeechWav')
+      .mockResolvedValue(Buffer.from('pcm-bytes'));
+
+    const output = await service.generateTranslatedAudioFiles({
+      translations: baseTranslations,
+      detectedLanguage: 'singlish',
+      originalTone: 'neutral',
+    });
+
+    expect(Object.keys(output).sort()).toEqual(['english', 'tanglish']);
+
+    const requestedLanguages = generateSpeechSpy.mock.calls
+      .map((call) => (call[0] as { language: SupportedLanguage }).language)
+      .sort();
+
+    expect(requestedLanguages).toEqual(['english', 'tanglish']);
+  });
+
+  it('retries english generation when english is mandatory', async () => {
+    const service = createService({
+      ttsMaxConcurrency: '1',
+      mandatoryEnglishRetries: '2',
+    });
+
+    let englishAttempts = 0;
+
+    const generateSpeechSpy = jest
+      .spyOn(service as any, 'generateSpeechWav')
+      .mockImplementation((params: unknown): Promise<Buffer> => {
+        const language = (params as { language?: SupportedLanguage }).language;
+        if (language === 'english') {
+          englishAttempts += 1;
+          if (englishAttempts === 1) {
+            throw new Error('temporary tts failure');
+          }
+        }
+
+        return Promise.resolve(Buffer.from('pcm-bytes'));
+      });
+
+    const output = await service.generateTranslatedAudioFiles({
+      translations: baseTranslations,
+      detectedLanguage: 'tanglish',
+      originalTone: 'neutral',
+    });
+
+    expect(englishAttempts).toBe(2);
+    expect(output.english).toBeDefined();
+    expect(output.singlish).toBeDefined();
+    expect(output.tanglish).toBeUndefined();
+    expect(generateSpeechSpy).toHaveBeenCalled();
   });
 });

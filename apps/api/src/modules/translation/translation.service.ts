@@ -16,6 +16,45 @@ import { S3StorageService } from '../../core/common/storage/s3-storage.service';
 
 const EVENT_TIMEZONE = 'Asia/Colombo';
 
+const SINGLISH_DOMINANCE_PATTERNS: Array<{ re: RegExp; weight: number }> = [
+  { re: /\bmachan\b/gi, weight: 3 },
+  { re: /\baney\b/gi, weight: 3 },
+  { re: /\baiyo\b/gi, weight: 3 },
+  { re: /\bmokada\b/gi, weight: 3 },
+  { re: /\bkiyala\b/gi, weight: 2 },
+  { re: /\bhari\b/gi, weight: 2 },
+  { re: /\bwadak\b/gi, weight: 2 },
+  { re: /\bapi\b/gi, weight: 1 },
+  { re: /\bonna\b/gi, weight: 1 },
+  { re: /\bnangi\b|\bmalli\b/gi, weight: 1 },
+];
+
+const TANGLISH_DOMINANCE_PATTERNS: Array<{ re: RegExp; weight: number }> = [
+  { re: /\benna\b/gi, weight: 3 },
+  { re: /\bsollu\b/gi, weight: 3 },
+  { re: /\bvaa\b/gi, weight: 3 },
+  { re: /\bpoda\b/gi, weight: 3 },
+  { re: /\bnalla\b/gi, weight: 2 },
+  { re: /\bseri\b/gi, weight: 2 },
+  { re: /\bpa\b/gi, weight: 1 },
+  { re: /\bda\b/gi, weight: 1 },
+  { re: /\bmachi\b/gi, weight: 1 },
+  { re: /\bamma\b|\banna\b/gi, weight: 1 },
+];
+
+interface DominantLanguageDecision {
+  detectedLanguage: DetectedLanguage;
+  reason: string;
+  singlishScore: number;
+  tanglishScore: number;
+}
+
+interface AudioGenerationJob {
+  language: SupportedLanguage;
+  text: string;
+  maxAttempts: number;
+}
+
 function getIsoLikeInTimezone(
   date: Date,
   timeZone: string,
@@ -141,6 +180,8 @@ export class TranslationService {
   private readonly ttsModel = 'gemini-2.5-flash-preview-tts';
   private readonly geminiApiKey: string;
   private readonly ttsMaxConcurrency: number;
+  private readonly mandatoryEnglishRetries: number;
+  private readonly dominantLanguageLowConfidenceThreshold: number;
 
   constructor(
     private readonly configService: ConfigService,
@@ -150,6 +191,15 @@ export class TranslationService {
     this.ttsMaxConcurrency = this.resolveTtsMaxConcurrency(
       this.configService.get<string>('TTS_MAX_CONCURRENCY'),
     );
+    this.mandatoryEnglishRetries = this.resolveMandatoryEnglishRetries(
+      this.configService.get<string>('TTS_MANDATORY_ENGLISH_RETRIES'),
+    );
+    this.dominantLanguageLowConfidenceThreshold =
+      this.resolveDominantLanguageLowConfidenceThreshold(
+        this.configService.get<string>(
+          'DOMINANT_LANGUAGE_LOW_CONFIDENCE_THRESHOLD',
+        ),
+      );
     this.translationTimeoutMsText = this.resolveTranslationTimeoutMs(
       this.configService.get<string>('TRANSLATION_TIMEOUT_MS_TEXT') ??
         this.configService.get<string>('TRANSLATION_TIMEOUT_MS'),
@@ -189,7 +239,7 @@ export class TranslationService {
       : null;
 
     this.logger.log(
-      `[TranslationService] primaryModel=${this.primaryModelName} fallbackModel=${this.fallbackModelName ?? 'none'} timeoutTextMs=${this.translationTimeoutMsText} timeoutMediaMs=${this.translationTimeoutMsMedia} modelMaxRetries=${this.translationModelMaxRetries}`,
+      `[TranslationService] primaryModel=${this.primaryModelName} fallbackModel=${this.fallbackModelName ?? 'none'} timeoutTextMs=${this.translationTimeoutMsText} timeoutMediaMs=${this.translationTimeoutMsMedia} modelMaxRetries=${this.translationModelMaxRetries} ttsMaxConcurrency=${this.ttsMaxConcurrency} mandatoryEnglishRetries=${this.mandatoryEnglishRetries} dominanceLowConfidenceThreshold=${this.dominantLanguageLowConfidenceThreshold}`,
     );
   }
 
@@ -218,12 +268,14 @@ Also output a "transcription" field: for audio input this is the full verbatim t
 Also output a "detectedLanguage" field with one of: "english", "singlish", "tanglish", "mixed", "unknown".
 Also output an "originalTone" field as a short phrase describing the speaker's tone (examples: "calm", "urgent", "excited", "serious", "neutral").
 LANGUAGE DETECTION RULES:
-- Return "mixed" when the message meaningfully combines two or more language styles (for example: English + Singlish, English + Tanglish, or Tanglish + Singlish) in the same utterance.
-- Return a single language only when one style is clearly dominant and other-language words are incidental.
-- If the language cannot be confidently identified, return "unknown".
+- Return "mixed" when the message meaningfully combines two or more language styles (for example: English + Singlish, English + Tanglish, or Tanglish + Singlish) in the same utterance and both styles contribute substantial meaning.
+- Return "singlish" if Sinhala-in-English transliteration is dominant, even when common English words are present (for example: "Machan can we go now, hari").
+- Return "tanglish" if Tamil-in-English transliteration is dominant, even when common English words are present (for example: "Machi meeting-ku vaa, seri").
+- Return "english" only when the sentence is predominantly standard English with only incidental slang tokens.
+- Return "unknown" if the language cannot be confidently identified.
 Calculate a confidence score (0-100). If the phrase is too ambiguous even with context, lower the score.
-CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitionsRITICAL CONTEXT: The if they appear in the text: ${payload.userDictionary}
-Always use terms which commonly used and easily understood by users. dont use neche terms used by only a small group of people. If the input contains terms that are not commonly used, replace them with more common alternatives in the translations, but keep the original term in the transcription.
+CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitions if they appear in the text: ${payload.userDictionary}
+Always use terms that are commonly used and easily understood by users. Do not use niche terms known only by a small group. If the input contains uncommon terms, replace them with more common alternatives in the translations, but keep the original term in the transcription.
 
 ACTION EXTRACTION — In addition to translating, analyze the intent of the message.
 If it contains a clear, actionable request for a meeting, deadline, study session (kuppiya), or reminder, extract structured data into the "extractedActions" array.
@@ -367,6 +419,17 @@ Examples of messages WITHOUT actions:
         };
         const normalizedResult =
           this.normalizeTranslationResult(completeResult);
+        const languageDecision =
+          this.arbitrateDetectedLanguage(normalizedResult);
+
+        if (
+          languageDecision.detectedLanguage !==
+          normalizedResult.detectedLanguage
+        ) {
+          this.logger.log(
+            `[translateIntent] detectedLanguage adjusted from=${normalizedResult.detectedLanguage} to=${languageDecision.detectedLanguage} confidenceScore=${normalizedResult.confidenceScore} singlishScore=${languageDecision.singlishScore} tanglishScore=${languageDecision.tanglishScore} reason=${languageDecision.reason}`,
+          );
+        }
 
         this.logger.log(
           `[translateIntent] success model=${candidate.modelName} inputType=${inputType} timeoutMs=${timeoutMs} durationMs=${Date.now() - startedAt}`,
@@ -374,7 +437,7 @@ Examples of messages WITHOUT actions:
 
         return {
           ...normalizedResult,
-          detectedLanguage: normalizedResult.detectedLanguage,
+          detectedLanguage: languageDecision.detectedLanguage,
           originalTone: normalizedResult.originalTone,
         };
       } catch (error) {
@@ -428,6 +491,131 @@ Examples of messages WITHOUT actions:
     return text.replace(/\bado\b/gi, (match) =>
       this.matchReplacementCase('adei', match),
     );
+  }
+
+  private arbitrateDetectedLanguage(
+    result: TranslationResult,
+  ): DominantLanguageDecision {
+    const modelDetectedLanguage: DetectedLanguage =
+      result.detectedLanguage ?? 'unknown';
+    const confidenceScore = this.clampConfidenceScore(result.confidenceScore);
+    const transcript = (result.transcription ?? '').toLowerCase();
+
+    const singlishScore = this.scoreLanguagePatterns(
+      transcript,
+      SINGLISH_DOMINANCE_PATTERNS,
+    );
+    const tanglishScore = this.scoreLanguagePatterns(
+      transcript,
+      TANGLISH_DOMINANCE_PATTERNS,
+    );
+    const combinedCodeMix = singlishScore + tanglishScore;
+    const dominantGap = Math.abs(singlishScore - tanglishScore);
+    const isBalancedCodeMix =
+      singlishScore >= 2 &&
+      tanglishScore >= 2 &&
+      dominantGap <= Math.max(2, Math.floor(combinedCodeMix * 0.35));
+
+    if (confidenceScore < this.dominantLanguageLowConfidenceThreshold) {
+      return {
+        detectedLanguage: 'mixed',
+        reason: 'low-confidence-fallback',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    if (isBalancedCodeMix) {
+      return {
+        detectedLanguage: 'mixed',
+        reason: 'balanced-code-mix',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    if (singlishScore >= Math.max(2, Math.ceil(tanglishScore * 1.2))) {
+      return {
+        detectedLanguage: 'singlish',
+        reason: 'singlish-dominant-cues',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    if (tanglishScore >= Math.max(2, Math.ceil(singlishScore * 1.2))) {
+      return {
+        detectedLanguage: 'tanglish',
+        reason: 'tanglish-dominant-cues',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    if (combinedCodeMix === 0) {
+      if (
+        modelDetectedLanguage === 'english' ||
+        modelDetectedLanguage === 'singlish' ||
+        modelDetectedLanguage === 'tanglish'
+      ) {
+        return {
+          detectedLanguage: modelDetectedLanguage,
+          reason: 'model-language-without-strong-cues',
+          singlishScore,
+          tanglishScore,
+        };
+      }
+
+      return {
+        detectedLanguage: 'english',
+        reason: 'default-english-without-cues',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    if (
+      modelDetectedLanguage === 'english' ||
+      modelDetectedLanguage === 'singlish' ||
+      modelDetectedLanguage === 'tanglish'
+    ) {
+      return {
+        detectedLanguage: modelDetectedLanguage,
+        reason: 'model-language-with-light-cues',
+        singlishScore,
+        tanglishScore,
+      };
+    }
+
+    return {
+      detectedLanguage: 'mixed',
+      reason: 'fallback-mixed-light-cues',
+      singlishScore,
+      tanglishScore,
+    };
+  }
+
+  private scoreLanguagePatterns(
+    text: string,
+    patterns: Array<{ re: RegExp; weight: number }>,
+  ): number {
+    let score = 0;
+    for (const { re, weight } of patterns) {
+      const matches = text.match(re);
+      if (matches) {
+        score += matches.length * weight;
+      }
+    }
+
+    return score;
+  }
+
+  private clampConfidenceScore(score: number): number {
+    if (!Number.isFinite(score)) {
+      return 0;
+    }
+
+    return Math.min(100, Math.max(0, Math.round(score)));
   }
 
   private matchReplacementCase(replacement: string, source: string): string {
@@ -534,12 +722,26 @@ Examples of messages WITHOUT actions:
     const targets = this.getTargetLanguages(params.detectedLanguage);
     if (targets.length === 0) return {};
 
+    const englishIsMandatory = this.isEnglishMandatoryForDetectedLanguage(
+      params.detectedLanguage,
+    );
+
     const jobs = targets
       .map((language) => ({
         language,
         text: params.translations[language]?.trim() ?? '',
+        maxAttempts:
+          englishIsMandatory && language === 'english'
+            ? 1 + this.mandatoryEnglishRetries
+            : 1,
       }))
       .filter((job) => job.text.length > 0);
+
+    jobs.sort((a, b) => {
+      if (a.language === 'english' && b.language !== 'english') return -1;
+      if (a.language !== 'english' && b.language === 'english') return 1;
+      return 0;
+    });
 
     if (jobs.length === 0) {
       return {};
@@ -559,33 +761,27 @@ Examples of messages WITHOUT actions:
         nextJobIndex += 1;
         if (index >= jobs.length) return;
 
-        const job = jobs[index];
+        const job = jobs[index] as AudioGenerationJob;
         const itemStartedAt = Date.now();
 
         try {
-          const wavAudio = await this.generateSpeechWav({
+          const generated = await this.generateAndUploadSpeechWav({
             transcript: job.text,
             language: job.language,
             tone: params.originalTone,
+            maxAttempts: job.maxAttempts,
           });
 
-          const fileName = `tts-${job.language}-${randomUUID()}.wav`;
-          const uploaded = await this.s3StorageService.uploadBuffer({
-            buffer: wavAudio,
-            fileName,
-            mimeType: 'audio/wav',
-            folder: 'tts',
-          });
-          output[job.language] = uploaded.url;
+          output[job.language] = generated.url;
           successCount += 1;
 
           this.logger.log(
-            `[generateTranslatedAudioFiles] Generated ${job.language} audio in ${Date.now() - itemStartedAt}ms`,
+            `[generateTranslatedAudioFiles] Generated ${job.language} audio in ${Date.now() - itemStartedAt}ms attempts=${generated.attempts}`,
           );
         } catch (error) {
           failureCount += 1;
           this.logger.warn(
-            `[generateTranslatedAudioFiles] Failed for ${job.language} after ${Date.now() - itemStartedAt}ms: ${this.describeTtsError(error)}`,
+            `[generateTranslatedAudioFiles] Failed for ${job.language} after ${Date.now() - itemStartedAt}ms attempts=${job.maxAttempts}: ${this.describeTtsError(error)}`,
           );
         }
       }
@@ -596,8 +792,14 @@ Examples of messages WITHOUT actions:
     );
 
     this.logger.log(
-      `[generateTranslatedAudioFiles] Completed detectedLanguage=${params.detectedLanguage} targets=${jobs.length} successCount=${successCount} failureCount=${failureCount} concurrency=${concurrency} durationMs=${Date.now() - startedAt}`,
+      `[generateTranslatedAudioFiles] Completed detectedLanguage=${params.detectedLanguage} targets=${jobs.length} successCount=${successCount} failureCount=${failureCount} concurrency=${concurrency} mandatoryEnglish=${englishIsMandatory} hasEnglish=${Boolean(output.english)} durationMs=${Date.now() - startedAt}`,
     );
+
+    if (englishIsMandatory && !output.english) {
+      this.logger.warn(
+        '[generateTranslatedAudioFiles] Mandatory English audio missing after retries',
+      );
+    }
 
     if (successCount === 0 && failureCount > 0) {
       this.logger.warn(
@@ -608,6 +810,48 @@ Examples of messages WITHOUT actions:
     return output;
   }
 
+  private async generateAndUploadSpeechWav(params: {
+    transcript: string;
+    language: SupportedLanguage;
+    tone: string;
+    maxAttempts: number;
+  }): Promise<{ url: string; attempts: number }> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= params.maxAttempts; attempt += 1) {
+      try {
+        const wavAudio = await this.generateSpeechWav({
+          transcript: params.transcript,
+          language: params.language,
+          tone: params.tone,
+        });
+
+        const fileName = `tts-${params.language}-${randomUUID()}.wav`;
+        const uploaded = await this.s3StorageService.uploadBuffer({
+          buffer: wavAudio,
+          fileName,
+          mimeType: 'audio/wav',
+          folder: 'tts',
+        });
+
+        return {
+          url: uploaded.url,
+          attempts: attempt,
+        };
+      } catch (error) {
+        lastError = error;
+
+        if (attempt < params.maxAttempts) {
+          this.logger.warn(
+            `[generateTranslatedAudioFiles] Retrying ${params.language} audio attempt=${attempt + 1}/${params.maxAttempts}: ${this.describeTtsError(error)}`,
+          );
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
   private resolveTtsMaxConcurrency(rawValue: string | undefined): number {
     const parsed = Number.parseInt(rawValue ?? '', 10);
     if (!Number.isFinite(parsed)) {
@@ -615,6 +859,26 @@ Examples of messages WITHOUT actions:
     }
 
     return Math.min(3, Math.max(1, parsed));
+  }
+
+  private resolveMandatoryEnglishRetries(rawValue: string | undefined): number {
+    const parsed = Number.parseInt(rawValue ?? '', 10);
+    if (!Number.isFinite(parsed)) {
+      return 1;
+    }
+
+    return Math.min(3, Math.max(0, parsed));
+  }
+
+  private resolveDominantLanguageLowConfidenceThreshold(
+    rawValue: string | undefined,
+  ): number {
+    const parsed = Number.parseInt(rawValue ?? '', 10);
+    if (!Number.isFinite(parsed)) {
+      return 65;
+    }
+
+    return Math.min(90, Math.max(40, parsed));
   }
 
   private describeTtsError(error: unknown): string {
@@ -647,6 +911,12 @@ Examples of messages WITHOUT actions:
       default:
         return ['english', 'singlish', 'tanglish'];
     }
+  }
+
+  private isEnglishMandatoryForDetectedLanguage(
+    detectedLanguage: DetectedLanguage,
+  ): boolean {
+    return detectedLanguage === 'singlish' || detectedLanguage === 'tanglish';
   }
 
   private async generateSpeechWav(params: {
@@ -737,6 +1007,9 @@ Examples of messages WITHOUT actions:
       `Style: ${params.tone || 'neutral'}`,
       'Pacing: Natural conversational pacing with clear diction.',
       `Accent: ${accentHint}`,
+      `Language Target: ${params.language}`,
+      'Strict Language Rule: Speak only in the requested Language Target. Do not drift into the other two LinkLanka language styles.',
+      'Code-Mix Rule: If the provided transcript contains incidental foreign words, keep pronunciation natural but preserve the requested target style as dominant.',
       'Pronunciation: If transliterated Sri Lankan words appear, pronounce them naturally as used in Sri Lanka.',
       '',
       '#### TRANSCRIPT',
