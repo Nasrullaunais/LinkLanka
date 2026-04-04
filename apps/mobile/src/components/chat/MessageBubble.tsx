@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
@@ -225,6 +226,7 @@ function AIMediatingIndicator({ label = 'AI mediating' }: { label?: string }) {
 /** Number of waveform bars shown in the playback visualiser.
  *  Reduced from 32 → 20 to cut View element count (2 layers × 20 = 40 vs 64). */
 const PLAYER_WAVEFORM_BARS = 20;
+const TRANSLATED_EQUALIZER_CYCLE_MS = 680;
 
 /**
  * Generate a deterministic list of bar heights (0–1) seeded by the audio URI
@@ -269,6 +271,9 @@ const AudioPlayer = memo(function AudioPlayer({
   const { colors } = useTheme();
   const normalizedUri = normalizeAudioUri(uri);
   const [resolvedUri, setResolvedUri] = useState(normalizedUri);
+  const [isResolvingUri, setIsResolvingUri] = useState(false);
+  const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
+  const cacheRequestSeqRef = useRef(0);
   const audioCtx = useChatAudioPlayer(); // stable context — NEVER triggers re-renders
 
   // Shared values kept on the UI thread for smooth animation.
@@ -288,6 +293,15 @@ const AudioPlayer = memo(function AudioPlayer({
     },
   );
 
+  useAnimatedReaction(
+    () => audioCtx.activeMessageId.value === messageId && audioCtx.isPreparingSV.value,
+    (preparing, prev) => {
+      if (preparing !== prev) {
+        runOnJS(setIsPreparingPlayback)(preparing);
+      }
+    },
+  );
+
   // ── Time label — updates once per second, ONLY for the active bubble ───
   const defaultLabel = initialDurationMs > 0 ? formatAudioTime(initialDurationMs / 1000) : '0:00';
   const [timeLabel, setTimeLabel] = useState(defaultLabel);
@@ -302,7 +316,9 @@ const AudioPlayer = memo(function AudioPlayer({
 
   useAnimatedReaction(
     () => {
-      const active = audioCtx.activeMessageId.value === messageId;
+      const active =
+        audioCtx.activeMessageId.value === messageId &&
+        audioCtx.hasPlaybackStartedSV.value;
       if (!active) return { active: false as const, sec: -1 };
       const rem = audioCtx.durationSV.value > 0
         ? Math.max(0, audioCtx.durationSV.value - audioCtx.currentTimeSV.value)
@@ -324,7 +340,12 @@ const AudioPlayer = memo(function AudioPlayer({
 
   // ── Waveform progress overlay (pure UI thread) ────────────────────────
   const animatedOverlayStyle = useAnimatedStyle(() => {
-    if (audioCtx.activeMessageId.value !== messageId) return { width: 0 };
+    if (
+      audioCtx.activeMessageId.value !== messageId ||
+      !audioCtx.hasPlaybackStartedSV.value
+    ) {
+      return { width: 0 };
+    }
     return { width: audioCtx.smoothProgress.value * trackWidthSV.value };
   });
   const animatedInnerStyle = useAnimatedStyle(() => ({
@@ -335,6 +356,12 @@ const AudioPlayer = memo(function AudioPlayer({
     setResolvedUri(normalizedUri);
   }, [normalizedUri]);
 
+  useEffect(() => {
+    return () => {
+      cacheRequestSeqRef.current += 1;
+    };
+  }, []);
+
   const handleToggle = useCallback(() => {
     if (!normalizedUri) return;
 
@@ -344,21 +371,40 @@ const AudioPlayer = memo(function AudioPlayer({
       return;
     }
 
+    const requestId = cacheRequestSeqRef.current + 1;
+    cacheRequestSeqRef.current = requestId;
+    setIsResolvingUri(true);
+
     void (async () => {
-      const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
-      setResolvedUri(cachedUri);
-      audioCtx.toggle(messageId, cachedUri);
+      try {
+        const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
+        if (cacheRequestSeqRef.current !== requestId) return;
+        setResolvedUri(cachedUri);
+        audioCtx.toggle(messageId, cachedUri);
+      } finally {
+        if (cacheRequestSeqRef.current === requestId) {
+          setIsResolvingUri(false);
+        }
+      }
     })();
   }, [audioCtx, messageId, normalizedUri, resolvedUri]);
 
   const handleSeek = useCallback(
     (evt: { nativeEvent: { locationX: number } }) => {
-      if (audioCtx.activeMessageId.value !== messageId || trackWidthSV.value <= 0) return;
+      if (
+        audioCtx.activeMessageId.value !== messageId ||
+        !audioCtx.hasPlaybackStartedSV.value ||
+        trackWidthSV.value <= 0
+      ) {
+        return;
+      }
       const fraction = Math.max(0, Math.min(1, evt.nativeEvent.locationX / trackWidthSV.value));
       audioCtx.seek(fraction);
     },
     [audioCtx, messageId, trackWidthSV],
   );
+  const showLoading = isResolvingUri || isPreparingPlayback;
+  const displayedTimeLabel = showLoading ? 'Loading...' : timeLabel;
   const sentTimeStr = sentAt ? formatSentTime(sentAt) : null;
 
   const iconColor   = isOwn ? colors.audioIconOwn        : colors.audioIconReceived;
@@ -390,7 +436,11 @@ const AudioPlayer = memo(function AudioPlayer({
           hitSlop={8}
           style={({ pressed }) => [styles.playBtn, pressed && { opacity: 0.7 }]}
         >
-          <Ionicons name={showPause ? 'pause' : 'play'} size={22} color={iconColor} />
+          {showLoading ? (
+            <ActivityIndicator size="small" color={iconColor} />
+          ) : (
+            <Ionicons name={showPause ? 'pause' : 'play'} size={22} color={iconColor} />
+          )}
         </Pressable>
 
         {/* Waveform — tappable for seeking */}
@@ -398,7 +448,7 @@ const AudioPlayer = memo(function AudioPlayer({
           onLayout={(e) => { trackWidthSV.value = e.nativeEvent.layout.width; }}
           onPress={handleSeek}
           hitSlop={8}
-          style={styles.waveformContainer}
+          style={[styles.waveformContainer, showLoading && styles.waveformContainerLoading]}
         >
           {/* Background (inactive) bars */}
           {inactiveBars}
@@ -414,7 +464,7 @@ const AudioPlayer = memo(function AudioPlayer({
 
       {/* ── Footer: remaining time (left) + sent time (right) ── */}
       <View style={styles.audioFooter}>
-        <Text style={[styles.audioTime, { color: timeColor }]}>{timeLabel}</Text>
+        <Text style={[styles.audioTime, { color: timeColor }]}>{displayedTimeLabel}</Text>
         {sentTimeStr !== null && (
           <Text style={[styles.audioTime, { color: timeColor }]}>{sentTimeStr}</Text>
         )}
@@ -518,13 +568,26 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
   const [resolvedUri, setResolvedUri] = useState(normalizedUri);
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isResolvingUri, setIsResolvingUri] = useState(false);
+  const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
   const expandedProgress = useSharedValue(0);
+  const equalizerPhase = useSharedValue(0);
+  const cacheRequestSeqRef = useRef(0);
 
   useAnimatedReaction(
     () => audioCtx.activeMessageId.value === playbackId && audioCtx.isPlayingSV.value,
     (playing, prev) => {
       if (playing !== prev) {
         runOnJS(setIsPlaying)(playing);
+      }
+    }
+  );
+
+  useAnimatedReaction(
+    () => audioCtx.activeMessageId.value === playbackId && audioCtx.isPreparingSV.value,
+    (preparing, prev) => {
+      if (preparing !== prev) {
+        runOnJS(setIsPreparingPlayback)(preparing);
       }
     }
   );
@@ -536,23 +599,93 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
     });
   }, [isPlaying, expandedProgress]);
 
+  useEffect(() => {
+    if (isPlaying) {
+      equalizerPhase.value = withRepeat(
+        withTiming(1, {
+          duration: TRANSLATED_EQUALIZER_CYCLE_MS,
+          easing: Easing.inOut(Easing.ease),
+        }),
+        -1,
+        true,
+      );
+      return;
+    }
+
+    equalizerPhase.value = withTiming(0, {
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [equalizerPhase, isPlaying]);
+
   const shellStyle = useAnimatedStyle(() => ({
-    width: 28 + expandedProgress.value * 88,
+    width: 28 + expandedProgress.value * 112,
+  }));
+
+  const equalizerWrapStyle = useAnimatedStyle(() => ({
+    width: expandedProgress.value * 24,
+    opacity: expandedProgress.value,
   }));
 
   const labelWrapStyle = useAnimatedStyle(() => ({
-    width: expandedProgress.value * 56,
+    width: expandedProgress.value * 52,
     opacity: 0.35 + expandedProgress.value * 0.65,
   }));
 
-  const fillStyle = useAnimatedStyle(() => {
-    if (audioCtx.activeMessageId.value !== playbackId) return { width: '0%' };
-    return { width: `${audioCtx.smoothProgress.value * 100}%` };
+  const eqBar0Style = useAnimatedStyle(() => {
+    const wave = Math.sin((equalizerPhase.value + 0.00) * Math.PI * 2);
+    const level = (wave + 1) / 2;
+    return {
+      opacity: 0.4 + level * 0.6,
+      transform: [{ scaleY: 0.45 + level * 0.55 }],
+    };
+  });
+
+  const eqBar1Style = useAnimatedStyle(() => {
+    const wave = Math.sin((equalizerPhase.value + 0.20) * Math.PI * 2);
+    const level = (wave + 1) / 2;
+    return {
+      opacity: 0.4 + level * 0.6,
+      transform: [{ scaleY: 0.45 + level * 0.55 }],
+    };
+  });
+
+  const eqBar2Style = useAnimatedStyle(() => {
+    const wave = Math.sin((equalizerPhase.value + 0.42) * Math.PI * 2);
+    const level = (wave + 1) / 2;
+    return {
+      opacity: 0.4 + level * 0.6,
+      transform: [{ scaleY: 0.45 + level * 0.55 }],
+    };
+  });
+
+  const eqBar3Style = useAnimatedStyle(() => {
+    const wave = Math.sin((equalizerPhase.value + 0.64) * Math.PI * 2);
+    const level = (wave + 1) / 2;
+    return {
+      opacity: 0.4 + level * 0.6,
+      transform: [{ scaleY: 0.45 + level * 0.55 }],
+    };
+  });
+
+  const eqBar4Style = useAnimatedStyle(() => {
+    const wave = Math.sin((equalizerPhase.value + 0.84) * Math.PI * 2);
+    const level = (wave + 1) / 2;
+    return {
+      opacity: 0.4 + level * 0.6,
+      transform: [{ scaleY: 0.45 + level * 0.55 }],
+    };
   });
 
   useEffect(() => {
     setResolvedUri(normalizedUri);
   }, [normalizedUri]);
+
+  useEffect(() => {
+    return () => {
+      cacheRequestSeqRef.current += 1;
+    };
+  }, []);
 
   const handlePress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -563,12 +696,25 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
       return;
     }
 
+    const requestId = cacheRequestSeqRef.current + 1;
+    cacheRequestSeqRef.current = requestId;
+    setIsResolvingUri(true);
+
     void (async () => {
-      const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
-      setResolvedUri(cachedUri);
-      audioCtx.toggle(playbackId, cachedUri);
+      try {
+        const cachedUri = await getCachedMediaUri(normalizedUri, 'audio');
+        if (cacheRequestSeqRef.current !== requestId) return;
+        setResolvedUri(cachedUri);
+        audioCtx.toggle(playbackId, cachedUri);
+      } finally {
+        if (cacheRequestSeqRef.current === requestId) {
+          setIsResolvingUri(false);
+        }
+      }
     })();
   }, [audioCtx, normalizedUri, playbackId, resolvedUri]);
+
+  const showLoading = isResolvingUri || isPreparingPlayback;
 
   return (
     <Animated.View style={[styles.translatedAudioBtnShell, shellStyle]}>
@@ -581,10 +727,50 @@ const TranslatedAudioButton = memo(function TranslatedAudioButton({
           pressed && { opacity: 0.7 },
         ]}
       >
-        <Animated.View
-          style={[styles.translatedAudioBtnFill, { backgroundColor: colors.primaryFaded }, fillStyle]}
-        />
-        <Ionicons name={isPlaying ? 'pause' : 'play'} size={12} color={colors.primaryLight} />
+        {showLoading ? (
+          <ActivityIndicator size="small" color={colors.primaryLight} />
+        ) : (
+          <Ionicons name={isPlaying ? 'pause' : 'play'} size={12} color={colors.primaryLight} />
+        )}
+
+        <Animated.View style={[styles.translatedEqualizerWrap, equalizerWrapStyle]}>
+          <Animated.View
+            style={[
+              styles.translatedEqualizerBar,
+              { height: 7, backgroundColor: colors.primaryLight },
+              eqBar0Style,
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.translatedEqualizerBar,
+              { height: 11, backgroundColor: colors.primaryLight },
+              eqBar1Style,
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.translatedEqualizerBar,
+              { height: 9, backgroundColor: colors.primaryLight },
+              eqBar2Style,
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.translatedEqualizerBar,
+              { height: 12, backgroundColor: colors.primaryLight },
+              eqBar3Style,
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.translatedEqualizerBar,
+              { height: 8, backgroundColor: colors.primaryLight },
+              eqBar4Style,
+            ]}
+          />
+        </Animated.View>
+
         <Animated.View style={[styles.translatedAudioLabelWrap, labelWrapStyle]}>
           <Text numberOfLines={1} style={[styles.translatedAudioText, { color: colors.primaryLight }]}> 
             {entry.label}
@@ -1368,6 +1554,9 @@ const styles = StyleSheet.create({
     height: 32,
     gap: 2,
   },
+  waveformContainerLoading: {
+    opacity: 0.65,
+  },
   waveformOverlay: {
     position: 'absolute',
     left: 0,
@@ -1499,12 +1688,16 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     height: 24,
   },
-  translatedAudioBtnFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    borderRadius: 10,
+  translatedEqualizerWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1.5,
+    marginLeft: 4,
+    overflow: 'hidden',
+  },
+  translatedEqualizerBar: {
+    width: 2,
+    borderRadius: 1,
   },
   translatedAudioLabelWrap: {
     overflow: 'hidden',

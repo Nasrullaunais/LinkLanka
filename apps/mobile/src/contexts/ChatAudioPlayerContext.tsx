@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { useSharedValue, withTiming, type SharedValue } from 'react-native-reanimated';
 import { useAudioPlayer, useAudioPlayerStatus, AudioModule } from 'expo-audio';
 
+const PLAYBACK_START_EPSILON_S = 0.05;
+
 /**
  * Centralised audio player for the chat screen — **zero-re-render edition**.
  *
@@ -20,6 +22,10 @@ import { useAudioPlayer, useAudioPlayerStatus, AudioModule } from 'expo-audio';
 interface ChatAudioPlayerContextType {
   /** SharedValue: message ID currently loaded (null = idle). UI-thread readable. */
   activeMessageId: SharedValue<string | null>;
+  /** SharedValue: track is resolving/loading before real playback has started. */
+  isPreparingSV: SharedValue<boolean>;
+  /** SharedValue: playback has audibly started (time has advanced). */
+  hasPlaybackStartedSV: SharedValue<boolean>;
   /** SharedValue: whether the player is currently playing. UI-thread readable. */
   isPlayingSV: SharedValue<boolean>;
   /** SharedValue: current playback time in seconds. UI-thread readable. */
@@ -56,11 +62,14 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
   const activeUriRef = useRef(activeUri);
   activeUriRef.current = activeUri;
   const prevPlayingRef = useRef(false);
+  const prevCurrentTimeRef = useRef(0);
   const prevFractionRef = useRef(0);
   const pauseRequestedRef = useRef(false);
 
   // ── SharedValues: the ONLY channel consumers observe ───────────────────
   const activeMessageId = useSharedValue<string | null>(null);
+  const isPreparingSV = useSharedValue(false);
+  const hasPlaybackStartedSV = useSharedValue(false);
   const isPlayingSV = useSharedValue(false);
   const currentTimeSV = useSharedValue(0);
   const durationSV = useSharedValue(0);
@@ -76,36 +85,71 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
 
     const duration = status.duration;
     const current = status.currentTime;
+    const prevCurrent = prevCurrentTimeRef.current;
     const fraction = duration > 0 ? Math.min(1, Math.max(0, current / duration)) : 0;
     const wasPlaying = prevPlayingRef.current;
     const justStopped = wasPlaying && !status.playing;
+    const currentAdvanced = current > PLAYBACK_START_EPSILON_S || current > prevCurrent + 0.01;
+
+    if (status.playing) {
+      if (currentAdvanced) {
+        hasPlaybackStartedSV.value = true;
+        isPreparingSV.value = false;
+      } else {
+        isPreparingSV.value = true;
+      }
+    } else {
+      isPreparingSV.value = false;
+      if (current <= PLAYBACK_START_EPSILON_S) {
+        hasPlaybackStartedSV.value = false;
+      }
+    }
 
     if (duration > 0) {
+      const visualFraction = hasPlaybackStartedSV.value ? fraction : 0;
+
       if (status.playing) {
-        const remainingMs = Math.max(0, Math.round((duration - current) * 1000));
-        smoothProgress.value = withTiming(1, { duration: Math.max(80, remainingMs) });
+        // Keep progress tied to the actual reported playback position.
+        smoothProgress.value = withTiming(visualFraction, { duration: 90 });
       } else if (justStopped) {
         const endedNaturally =
-          !pauseRequestedRef.current && Math.max(fraction, prevFractionRef.current) >= 0.97;
-        smoothProgress.value = endedNaturally ? 1 : fraction;
+          !pauseRequestedRef.current &&
+          hasPlaybackStartedSV.value &&
+          Math.max(fraction, prevFractionRef.current) >= 0.97;
+        smoothProgress.value = endedNaturally ? 1 : visualFraction;
       } else {
-        smoothProgress.value = fraction;
+        smoothProgress.value = visualFraction;
       }
 
       prevFractionRef.current =
-        !status.playing && justStopped && !pauseRequestedRef.current && Math.max(fraction, prevFractionRef.current) >= 0.97
+        !status.playing &&
+        justStopped &&
+        !pauseRequestedRef.current &&
+        hasPlaybackStartedSV.value &&
+        Math.max(fraction, prevFractionRef.current) >= 0.97
           ? 1
-          : fraction;
+          : visualFraction;
     } else if (!status.playing) {
       smoothProgress.value = 0;
       prevFractionRef.current = 0;
     }
 
     prevPlayingRef.current = status.playing;
+    prevCurrentTimeRef.current = current;
     if (!status.playing) {
       pauseRequestedRef.current = false;
     }
-  }, [status.playing, status.currentTime, status.duration, isPlayingSV, currentTimeSV, durationSV, smoothProgress]);
+  }, [
+    status.playing,
+    status.currentTime,
+    status.duration,
+    isPlayingSV,
+    currentTimeSV,
+    durationSV,
+    smoothProgress,
+    hasPlaybackStartedSV,
+    isPreparingSV,
+  ]);
 
   // ── Stable callbacks (only reference refs / SharedValues) ──────────────
   const play = useCallback(async (messageId: string, uri: string) => {
@@ -122,15 +166,30 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
       }
 
       activeMessageId.value = messageId;
+      const s = statusRef.current;
+      const resumingSameTrack =
+        uri === activeUriRef.current &&
+        activeMessageId.value === messageId &&
+        s.duration > 0 &&
+        s.currentTime > PLAYBACK_START_EPSILON_S &&
+        s.currentTime < s.duration - 0.15;
+
+      if (resumingSameTrack) {
+        hasPlaybackStartedSV.value = true;
+        isPreparingSV.value = false;
+      } else {
+        hasPlaybackStartedSV.value = false;
+        isPreparingSV.value = true;
+      }
 
       if (uri !== activeUriRef.current) {
         setActiveUri(uri);
         smoothProgress.value = 0;
         prevFractionRef.current = 0;
+        prevCurrentTimeRef.current = 0;
         // useAudioPlayer will create a new player for this URI.
         // The auto-play effect below starts playback once it loads.
       } else {
-        const s = statusRef.current;
         if (switchingMessage) {
           await playerRef.current.seekTo(0);
         } else if (s.duration > 0 && s.currentTime >= s.duration - 0.1) {
@@ -139,35 +198,35 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
         playerRef.current.play();
       }
     } catch (err) {
+      isPreparingSV.value = false;
       console.error('[ChatAudioPlayer] Play error:', err);
     }
-  }, [activeMessageId, smoothProgress]);
+  }, [activeMessageId, hasPlaybackStartedSV, isPreparingSV, smoothProgress]);
 
   // Auto-play when URI changes (new track loaded)
   const prevUriRef = useRef(activeUri);
   useEffect(() => {
     if (activeUri && activeUri !== prevUriRef.current) {
       prevUriRef.current = activeUri;
-      const timer = setTimeout(() => {
-        playerRef.current.play();
-      }, 50);
-      return () => clearTimeout(timer);
+      playerRef.current.play();
     }
   }, [activeUri]);
 
   const pause = useCallback(() => {
     pauseRequestedRef.current = true;
+    isPreparingSV.value = false;
     playerRef.current.pause();
-  }, []);
+  }, [isPreparingSV]);
 
   const toggle = useCallback((messageId: string, uri: string) => {
     if (activeMessageId.value === messageId && statusRef.current.playing) {
       pauseRequestedRef.current = true;
+      isPreparingSV.value = false;
       playerRef.current.pause();
     } else {
       play(messageId, uri);
     }
-  }, [activeMessageId, play]);
+  }, [activeMessageId, isPreparingSV, play]);
 
   const seek = useCallback((fraction: number) => {
     const dur = statusRef.current.duration;
@@ -183,6 +242,8 @@ export function ChatAudioPlayerProvider({ children }: { children: React.ReactNod
   if (value.current === null) {
     value.current = {
       activeMessageId,
+      isPreparingSV,
+      hasPlaybackStartedSV,
       isPlayingSV,
       currentTimeSV,
       durationSV,
