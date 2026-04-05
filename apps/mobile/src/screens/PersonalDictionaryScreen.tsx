@@ -250,6 +250,12 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
 
     if (!word) return 'Enter a word or phrase.';
     if (!meaning) return 'Enter the meaning.';
+    if (word.length > MAX_WORD_LENGTH) {
+      return `Word must be at most ${MAX_WORD_LENGTH} characters.`;
+    }
+    if (meaning.length > MAX_MEANING_LENGTH) {
+      return `Meaning must be at most ${MAX_MEANING_LENGTH} characters.`;
+    }
 
     if (duplicateInTargetLanguage) {
       return `"${word}" already exists in ${PERSONAL_CONTEXT_DIALECT_LABELS[dialectInput]}.`;

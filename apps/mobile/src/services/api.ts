@@ -860,10 +860,15 @@ export async function askDocumentQuestion(
   messageId: string,
   userQuestion: string,
   chatHistory: QAChatTurn[],
+  preferredLanguage?: 'english' | 'singlish' | 'tanglish',
 ): Promise<DocumentQAResponse> {
   const { data } = await apiClient.post<DocumentQAResponse>(
     `/document-ai/${messageId}/qa`,
-    { userQuestion, chatHistory },
+    {
+      userQuestion,
+      chatHistory,
+      ...(preferredLanguage ? { preferredLanguage } : {}),
+    },
   );
   return data;
 }

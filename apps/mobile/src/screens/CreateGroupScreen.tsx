@@ -19,6 +19,7 @@ import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'CreateGroup'>;
 const MIN_GROUP_NAME_LENGTH = 2;
+const MAX_GROUP_NAME_LENGTH = 80;
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function CreateGroupScreen({ navigation }: Props) {
@@ -93,6 +94,10 @@ export default function CreateGroupScreen({ navigation }: Props) {
       setError(`Group name must be at least ${MIN_GROUP_NAME_LENGTH} characters.`);
       return;
     }
+    if (name.length > MAX_GROUP_NAME_LENGTH) {
+      setError(`Group name must be at most ${MAX_GROUP_NAME_LENGTH} characters.`);
+      return;
+    }
 
     setError('');
     setIsCreating(true);
@@ -159,7 +164,7 @@ export default function CreateGroupScreen({ navigation }: Props) {
         placeholderTextColor={colors.inputPlaceholder}
         value={groupName}
         onChangeText={(t) => { setGroupName(t); setError(''); }}
-        maxLength={60}
+        maxLength={MAX_GROUP_NAME_LENGTH}
         returnKeyType="next"
       />
 

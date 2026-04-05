@@ -39,8 +39,8 @@ export const ALLOWED_PROFILE_PICTURE_MIMES = new Set([
 /** 10 MB for general media uploads. */
 export const MAX_MEDIA_FILE_SIZE = 10 * 1024 * 1024;
 
-/** 5 MB for profile pictures. */
-export const MAX_PROFILE_PICTURE_SIZE = 5 * 1024 * 1024;
+/** 1 MB for profile pictures. */
+export const MAX_PROFILE_PICTURE_SIZE = 1 * 1024 * 1024;
 
 // ── Safe MIME → extension mapping ────────────────────────────────────────────
 // Used to derive the saved file extension from the validated MIME type

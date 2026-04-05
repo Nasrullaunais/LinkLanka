@@ -31,6 +31,9 @@ type LoginRequestError = {
   };
 };
 
+const MAX_EMAIL_LENGTH = 254;
+const MAX_PASSWORD_LENGTH = 128;
+
 function isInvalidCredentialError(err: LoginRequestError): boolean {
   if (err.response?.status !== 401) return false;
 
@@ -66,6 +69,22 @@ export default function LoginScreen({ navigation }: Props) {
 
     if (!isValidEmail(normalizedEmail)) {
       Alert.alert('Validation', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (normalizedEmail.length > MAX_EMAIL_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Email must be at most ${MAX_EMAIL_LENGTH} characters long.`,
+      );
+      return;
+    }
+
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Password must be at most ${MAX_PASSWORD_LENGTH} characters long.`,
+      );
       return;
     }
 
@@ -124,6 +143,7 @@ export default function LoginScreen({ navigation }: Props) {
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
+          maxLength={MAX_EMAIL_LENGTH}
           value={email}
           onChangeText={setEmail}
         />
@@ -133,6 +153,7 @@ export default function LoginScreen({ navigation }: Props) {
           placeholder="Password"
           placeholderTextColor={colors.inputPlaceholder}
           secureTextEntry
+          maxLength={MAX_PASSWORD_LENGTH}
           value={password}
           onChangeText={setPassword}
         />

@@ -4,6 +4,8 @@ import type { Socket } from 'socket.io-client';
 
 import type { ChatMessage } from '../components/chat/MessageBubble';
 
+const MAX_EDIT_MESSAGE_LENGTH = 2000;
+
 // ── Hook params ──────────────────────────────────────────────────────────────
 interface UseChatEditParams {
   messages: ChatMessage[];
@@ -73,6 +75,13 @@ export function useChatEdit({
       const trimmed = newText.trim();
       if (trimmed.length === 0) {
         Alert.alert('Empty message', 'Please enter some text before saving.');
+        return;
+      }
+      if (trimmed.length > MAX_EDIT_MESSAGE_LENGTH) {
+        Alert.alert(
+          'Message too long',
+          `Messages can be up to ${MAX_EDIT_MESSAGE_LENGTH} characters.`,
+        );
         return;
       }
       if (trimmed === msg.rawContent.trim()) {

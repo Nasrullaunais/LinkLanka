@@ -231,6 +231,23 @@ function buildQueuedMediaJob(
 }
 
 const PAGE_SIZE = 30;
+const MAX_CHAT_MESSAGE_LENGTH = 2000;
+const MAX_CHAT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_VOICE_RECORDING_DURATION_MS = 10 * 60 * 1000;
+
+function getLocalFileSizeBytes(uri: string): number | null {
+  try {
+    const file = new File(uri);
+    const info = file.info();
+    if (info.exists && typeof info.size === 'number' && Number.isFinite(info.size)) {
+      return Math.max(0, info.size);
+    }
+  } catch {
+    // Ignore local file-stat failures and let upload path surface runtime errors.
+  }
+
+  return null;
+}
 
 function showRetryStartedFeedback(): void {
   if (Platform.OS === 'android') {
@@ -532,6 +549,13 @@ export function useChatMessages({
           throw new Error('Queued audio is missing localUri');
         }
 
+        if (
+          typeof job.audio?.durationMs === 'number' &&
+          job.audio.durationMs > MAX_VOICE_RECORDING_DURATION_MS
+        ) {
+          throw new Error('Voice recordings can be up to 10 minutes long.');
+        }
+
         const audioFile = new File(localUri);
         const base64 = await audioFile.base64();
         if (!base64 || base64.length < 10) {
@@ -556,6 +580,14 @@ export function useChatMessages({
       const fileUri = job.file?.fileUri;
       if (!fileUri) {
         throw new Error('Queued media is missing fileUri');
+      }
+
+      const fileSizeBytes = getLocalFileSizeBytes(fileUri);
+      if (
+        fileSizeBytes != null &&
+        fileSizeBytes > MAX_CHAT_ATTACHMENT_BYTES
+      ) {
+        throw new Error('Attachments must be smaller than 5 MB.');
       }
 
       const mimeType =
@@ -1116,14 +1148,60 @@ export function useChatMessages({
     async (payload: ChatPayload) => {
       if (!userId) return;
 
+      let normalizedPayload: ChatPayload = payload;
+
+      if (payload.type === 'TEXT') {
+        const trimmed = payload.content.trim();
+        if (!trimmed) return;
+
+        if (trimmed.length > MAX_CHAT_MESSAGE_LENGTH) {
+          Alert.alert(
+            'Message too long',
+            `Messages can be up to ${MAX_CHAT_MESSAGE_LENGTH} characters.`,
+          );
+          return;
+        }
+
+        normalizedPayload = {
+          ...payload,
+          content: trimmed,
+        };
+      }
+
+      if (
+        payload.type === 'AUDIO' &&
+        typeof payload.durationMs === 'number' &&
+        payload.durationMs > MAX_VOICE_RECORDING_DURATION_MS
+      ) {
+        Alert.alert(
+          'Recording too long',
+          'Voice recordings can be up to 10 minutes long.',
+        );
+        return;
+      }
+
+      if (payload.type === 'IMAGE' || payload.type === 'DOCUMENT') {
+        const attachmentSizeBytes = getLocalFileSizeBytes(payload.content);
+        if (
+          attachmentSizeBytes != null &&
+          attachmentSizeBytes > MAX_CHAT_ATTACHMENT_BYTES
+        ) {
+          Alert.alert('File too large', 'Attachments must be smaller than 5 MB.');
+          return;
+        }
+      }
+
       const optimisticId = createClientTempId();
       const optimisticMessage: ChatMessage = {
         id: optimisticId,
         senderId: userId,
-        contentType: payload.type,
-        rawContent: payload.type === 'AUDIO'
-          ? JSON.stringify({ url: payload.localUri ?? '', durationMs: payload.durationMs ?? 0 })
-          : payload.content,
+        contentType: normalizedPayload.type,
+        rawContent: normalizedPayload.type === 'AUDIO'
+          ? JSON.stringify({
+              url: normalizedPayload.localUri ?? '',
+              durationMs: normalizedPayload.durationMs ?? 0,
+            })
+          : normalizedPayload.content,
         translations: null,
         confidenceScore: null,
         isOptimistic: true,
@@ -1136,7 +1214,7 @@ export function useChatMessages({
       onNewMessageRef.current?.();
 
       try {
-        if (payload.type === 'TEXT') {
+        if (normalizedPayload.type === 'TEXT') {
           if (!socket) {
             throw new Error('Chat connection is unavailable');
           }
@@ -1145,23 +1223,23 @@ export function useChatMessages({
             groupId,
             clientTempId: optimisticId,
             contentType: 'TEXT',
-            rawContent: payload.content,
+            rawContent: normalizedPayload.content,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           });
 
           reconcileOptimisticMessage(
             optimisticId,
             ack.id,
-            ack.rawContent || payload.content,
+            ack.rawContent || normalizedPayload.content,
           );
           return;
         }
 
-        if (payload.type === 'AUDIO' && !payload.localUri) {
+        if (normalizedPayload.type === 'AUDIO' && !normalizedPayload.localUri) {
           throw new Error('Audio recording path is missing');
         }
 
-        const mediaJob = buildQueuedMediaJob(groupId, optimisticId, payload);
+        const mediaJob = buildQueuedMediaJob(groupId, optimisticId, normalizedPayload);
         const nextJobs = [...outboxJobsRef.current, mediaJob];
         await persistOutboxJobs(nextJobs);
         scheduleOutboxDrain(0);

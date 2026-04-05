@@ -33,6 +33,7 @@ import LanguagePickerModal, {
 // PDF panel occupies ~42 % of the screen; the chat panel takes the rest and
 // shrinks correctly when the soft keyboard opens.
 const PDF_PANEL_HEIGHT = Math.round(Dimensions.get('window').height * 0.42);
+const MAX_DOCUMENT_QUESTION_LENGTH = 2000;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -388,6 +389,7 @@ export default function DocumentInterrogationModal({
   const handleSend = useCallback(async () => {
     const question = inputText.trim();
     if (!question || isAsking) return;
+    if (question.length > MAX_DOCUMENT_QUESTION_LENGTH) return;
 
     const userMsg: QAMessage = {
       id: generateId(),
@@ -669,7 +671,7 @@ export default function DocumentInterrogationModal({
               value={inputText}
               onChangeText={setInputText}
               multiline
-              maxLength={1000}
+              maxLength={MAX_DOCUMENT_QUESTION_LENGTH}
               editable={!isAsking}
               onSubmitEditing={handleSend}
               blurOnSubmit={false}

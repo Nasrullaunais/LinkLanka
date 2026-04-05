@@ -1108,12 +1108,20 @@ function MessageBubble({
   // ── Content (memoized to avoid re-creating JSX on unrelated state changes) ─
   const content = useMemo(() => {
     switch (contentType) {
-      case 'TEXT':
+      case 'TEXT': {
+        const sentTimeStr = message.createdAt ? formatSentTime(message.createdAt) : null;
+        const sentTimeColor = isOwn ? colors.audioTimeOwn : colors.audioTimeReceived;
         return (
-          <Text style={[styles.messageText, { color: isOwn ? colors.bubbleOwnText : colors.bubbleReceivedText }]}>
-            {rawContent}
-          </Text>
+          <View style={styles.textContentWrap}>
+            <Text style={[styles.messageText, { color: isOwn ? colors.bubbleOwnText : colors.bubbleReceivedText }]}>
+              {rawContent}
+            </Text>
+            {sentTimeStr !== null && (
+              <Text style={[styles.textSentTime, { color: sentTimeColor }]}>{sentTimeStr}</Text>
+            )}
+          </View>
         );
+      }
 
       case 'IMAGE':
         return (
@@ -1211,7 +1219,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeOwn, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -1371,6 +1379,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     pm.confidenceScore === nm.confidenceScore &&
     pm.translations === nm.translations &&
     pm.translatedAudioUrls === nm.translatedAudioUrls &&
+    pm.createdAt === nm.createdAt &&
     pm.detectedLanguage === nm.detectedLanguage &&
     pm.originalTone === nm.originalTone &&
     pm.extractedActions === nm.extractedActions &&
@@ -1486,6 +1495,15 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 15,
     lineHeight: 21,
+  },
+  textContentWrap: {
+    minWidth: 40,
+  },
+  textSentTime: {
+    alignSelf: 'flex-end',
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 4,
   },
 
   // Edited label

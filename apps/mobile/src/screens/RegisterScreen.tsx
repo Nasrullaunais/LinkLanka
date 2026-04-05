@@ -22,6 +22,9 @@ import { getApiErrorMessage, isValidEmail, normalizeEmail } from '../utils/auth'
 type Props = NativeStackScreenProps<AuthStackParamList, 'Register'>;
 const MIN_PASSWORD_LENGTH = 8;
 const MIN_DISPLAY_NAME_LENGTH = 2;
+const MAX_DISPLAY_NAME_LENGTH = 50;
+const MAX_EMAIL_LENGTH = 254;
+const MAX_PASSWORD_LENGTH = 128;
 
 export default function RegisterScreen({ navigation }: Props) {
   const { login } = useAuth();
@@ -50,8 +53,24 @@ export default function RegisterScreen({ navigation }: Props) {
       return;
     }
 
+    if (normalizedDisplayName.length > MAX_DISPLAY_NAME_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Display name must be at most ${MAX_DISPLAY_NAME_LENGTH} characters.`,
+      );
+      return;
+    }
+
     if (!isValidEmail(normalizedEmail)) {
       Alert.alert('Validation', 'Please enter a valid email address.');
+      return;
+    }
+
+    if (normalizedEmail.length > MAX_EMAIL_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Email must be at most ${MAX_EMAIL_LENGTH} characters long.`,
+      );
       return;
     }
 
@@ -59,6 +78,14 @@ export default function RegisterScreen({ navigation }: Props) {
       Alert.alert(
         'Validation',
         `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
+      );
+      return;
+    }
+
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      Alert.alert(
+        'Validation',
+        `Password must be at most ${MAX_PASSWORD_LENGTH} characters long.`,
       );
       return;
     }
@@ -132,6 +159,7 @@ export default function RegisterScreen({ navigation }: Props) {
           style={[styles.input, { backgroundColor: colors.inputBg, borderColor: colors.inputBorder, color: colors.inputText }]}
           placeholder="Display Name"
           placeholderTextColor={colors.inputPlaceholder}
+          maxLength={MAX_DISPLAY_NAME_LENGTH}
           value={displayName}
           onChangeText={setDisplayName}
         />
@@ -143,6 +171,7 @@ export default function RegisterScreen({ navigation }: Props) {
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
+          maxLength={MAX_EMAIL_LENGTH}
           value={email}
           onChangeText={setEmail}
         />
@@ -152,6 +181,7 @@ export default function RegisterScreen({ navigation }: Props) {
           placeholder="Password (min 8 characters)"
           placeholderTextColor={colors.inputPlaceholder}
           secureTextEntry
+          maxLength={MAX_PASSWORD_LENGTH}
           value={password}
           onChangeText={setPassword}
         />

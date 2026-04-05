@@ -102,11 +102,33 @@ const RECORDING_OPTIONS_WITH_METERING: RecordingOptions = {
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
+const MAX_CHAT_TEXT_LENGTH = 2000;
+const MAX_CHAT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_VOICE_RECORDING_DURATION_MS = 10 * 60 * 1000;
 const WAVEFORM_BARS = 24;
 /** Horizontal drag distance (px) needed to trigger swipe-to-cancel. */
 const CANCEL_THRESHOLD = 100;
 /** Vertical drag distance (px) needed to trigger lock-to-record. */
 const LOCK_THRESHOLD = 60;
+
+function getFileSizeBytes(uri: string): number | null {
+  try {
+    const file = new File(uri);
+    const info = file.info();
+    if (info.exists && typeof info.size === 'number' && Number.isFinite(info.size)) {
+      return Math.max(0, info.size);
+    }
+  } catch {
+    // Ignore local file-stat failures and allow downstream upload handling.
+  }
+
+  return null;
+}
+
+function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
 
 function normaliseDb(db: number): number {
   return Math.max(0, Math.min(1, (db + 60) / 60));
@@ -465,6 +487,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
   const stableLiveStatusRef = useRef<AudibilityStatus>('calibrating');
   const candidateLiveStatusRef = useRef<AudibilityStatus>('calibrating');
   const candidateLiveTicksRef = useRef(0);
+  const hasReachedRecordingLimitRef = useRef(false);
 
   // ── Slide-to-cancel & Slide-to-lock shared values ───────────────────────────
   const slideX = useSharedValue(0);
@@ -545,6 +568,35 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     setBlockedFeedback(null);
   }, []);
 
+  const validateAttachmentSize = useCallback(
+    ({
+      uri,
+      label,
+      sizeHint,
+    }: {
+      uri: string;
+      label: string;
+      sizeHint?: number | null;
+    }): boolean => {
+      const resolvedSize =
+        getFileSizeBytes(uri) ??
+        (typeof sizeHint === 'number' && Number.isFinite(sizeHint)
+          ? Math.max(0, sizeHint)
+          : null);
+
+      if (resolvedSize != null && resolvedSize > MAX_CHAT_ATTACHMENT_BYTES) {
+        Alert.alert(
+          'File too large',
+          `${label} must be smaller than 5 MB. Selected file is ${formatMegabytes(resolvedSize)}.`,
+        );
+        return false;
+      }
+
+      return true;
+    },
+    [],
+  );
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
 
@@ -574,6 +626,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
     isRecordingRef.current = false;
     isCancelled.value = 0;
     isLockEngaged.value = 0;
+    hasReachedRecordingLimitRef.current = false;
     startPromiseRef.current = null;
     setIsRecording(false);
     setIsLocked(false);
@@ -610,6 +663,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       meteringHistoryRef.current = [];
       setWaveform(Array(WAVEFORM_BARS).fill(0));
       setBlockedFeedback(null);
+      hasReachedRecordingLimitRef.current = false;
       stableLiveStatusRef.current = 'calibrating';
       candidateLiveStatusRef.current = 'calibrating';
       candidateLiveTicksRef.current = 0;
@@ -671,7 +725,10 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       return;
     }
 
-    const capturedDuration = durationRef.current;
+    const capturedDuration = Math.min(
+      durationRef.current,
+      MAX_VOICE_RECORDING_DURATION_MS,
+    );
     const meteringHistory = [...meteringHistoryRef.current];
     resetRecordingState();
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -717,6 +774,24 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       setIsSending(false);
     }
   }, [recorder, onSendMessage, resetRecordingState, isCancelled, showFriendlyBlockFeedback]);
+
+  useEffect(() => {
+    const durationMs = recorderState.durationMillis ?? 0;
+
+    if (
+      !isRecording ||
+      durationMs < MAX_VOICE_RECORDING_DURATION_MS ||
+      hasReachedRecordingLimitRef.current
+    ) {
+      return;
+    }
+
+    hasReachedRecordingLimitRef.current = true;
+    setRecordingHint('Maximum length reached (10:00)');
+    setRecordingHintTone('warn');
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    void handleStopRecording();
+  }, [isRecording, recorderState.durationMillis, handleStopRecording]);
 
   const handleLockRecording = useCallback(() => {
     setIsLocked(true);
@@ -792,9 +867,12 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         maxHeight: 1200,
         quality: 0.7,
       });
+      if (!validateAttachmentSize({ uri: compressed, label: 'Image' })) {
+        return;
+      }
       onSendMessage({ type: 'IMAGE', content: compressed });
     }
-  }, [onSendMessage]);
+  }, [onSendMessage, validateAttachmentSize]);
 
   const pickFromGallery = useCallback(async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -810,9 +888,12 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         maxHeight: 1200,
         quality: 0.7,
       });
+      if (!validateAttachmentSize({ uri: compressed, label: 'Image' })) {
+        return;
+      }
       onSendMessage({ type: 'IMAGE', content: compressed });
     }
-  }, [onSendMessage]);
+  }, [onSendMessage, validateAttachmentSize]);
 
   const handleAttachment = useCallback(() => setShowSheet(true), []);
 
@@ -829,12 +910,21 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
       });
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
+        if (
+          !validateAttachmentSize({
+            uri: asset.uri,
+            label: 'Document',
+            sizeHint: asset.size,
+          })
+        ) {
+          return;
+        }
         onSendMessage({ type: 'DOCUMENT', content: asset.uri, mimeType: asset.mimeType ?? 'application/pdf' });
       }
     } catch {
       Alert.alert('Error', 'Failed to pick document. Please try again.');
     }
-  }, [onSendMessage]);
+  }, [onSendMessage, validateAttachmentSize]);
 
   // ── Magic Refine ─────────────────────────────────────────────────────────
   const handleMagicReplace = useCallback((refined: string) => {
@@ -906,8 +996,13 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
 
         {/* Character count — only in normal mode */}
         {charCount > 200 && !showRecordingBar && (
-          <Text style={[styles.charCount, charCount > 1900 && styles.charCountWarn]}>
-            {charCount}/2000
+          <Text
+            style={[
+              styles.charCount,
+              charCount > MAX_CHAT_TEXT_LENGTH - 100 && styles.charCountWarn,
+            ]}
+          >
+            {charCount}/{MAX_CHAT_TEXT_LENGTH}
           </Text>
         )}
 
@@ -931,7 +1026,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
             value={inputText}
             onChangeText={setInputText}
             multiline
-            maxLength={2000}
+            maxLength={MAX_CHAT_TEXT_LENGTH}
             editable={!showRecordingBar}
           />
 

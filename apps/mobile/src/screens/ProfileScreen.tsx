@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import { File } from 'expo-file-system';
 import { Image as Compressor } from 'react-native-compressor';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +25,7 @@ import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'Profile'>;
 const MIN_DISPLAY_NAME_LENGTH = 2;
+const MAX_PROFILE_PICTURE_SIZE_BYTES = 1 * 1024 * 1024;
 
 const DIALECTS = [
   { key: 'singlish', label: 'Singlish' },
@@ -36,6 +38,24 @@ function inferProfileImageMime(uri: string): 'image/jpeg' | 'image/png' | 'image
   if (cleanUri.endsWith('.png')) return 'image/png';
   if (cleanUri.endsWith('.webp')) return 'image/webp';
   return 'image/jpeg';
+}
+
+function getFileSizeBytes(uri: string): number | null {
+  try {
+    const info = new File(uri).info();
+    if (info.exists && typeof info.size === 'number' && Number.isFinite(info.size)) {
+      return Math.max(0, info.size);
+    }
+  } catch {
+    // Ignore local file-stat failures and let upload handling decide next step.
+  }
+
+  return null;
+}
+
+function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -52,6 +72,30 @@ export default function ProfileScreen({ navigation }: Props) {
   const [pendingAvatarUrl, setPendingAvatarUrl] = useState<string | null>(null);
 
   const currentAvatarUrl = pendingAvatarUrl ?? userProfilePicture;
+
+  const isProfilePictureWithinLimit = useCallback(
+    (uri: string, sizeHint?: number | null): boolean => {
+      const resolvedSize =
+        getFileSizeBytes(uri) ??
+        (typeof sizeHint === 'number' && Number.isFinite(sizeHint)
+          ? Math.max(0, sizeHint)
+          : null);
+
+      if (
+        resolvedSize != null &&
+        resolvedSize > MAX_PROFILE_PICTURE_SIZE_BYTES
+      ) {
+        Alert.alert(
+          'Image too large',
+          `Profile pictures must be under 1 MB. Selected image is ${formatMegabytes(resolvedSize)}.`,
+        );
+        return false;
+      }
+
+      return true;
+    },
+    [],
+  );
 
   useEffect(() => {
     // Auth profile refresh is authoritative; clear local optimistic override.
@@ -78,6 +122,10 @@ export default function ProfileScreen({ navigation }: Props) {
     const selectedAsset = result.assets[0];
     const originalUri = selectedAsset.uri;
     const originalMimeType = inferProfileImageMime(originalUri);
+    const originalSize =
+      typeof selectedAsset.fileSize === 'number' && Number.isFinite(selectedAsset.fileSize)
+        ? Math.max(0, selectedAsset.fileSize)
+        : getFileSizeBytes(originalUri);
 
     setIsUploadingPic(true);
     try {
@@ -99,12 +147,20 @@ export default function ProfileScreen({ navigation }: Props) {
         );
       }
 
+      if (!isProfilePictureWithinLimit(uploadUri, originalSize)) {
+        return;
+      }
+
       let uploaded;
       try {
         uploaded = await uploadProfilePicture(uploadUri, uploadMimeType);
       } catch (uploadError) {
         if (uploadUri === originalUri) {
           throw uploadError;
+        }
+
+        if (!isProfilePictureWithinLimit(originalUri, originalSize)) {
+          return;
         }
 
         console.warn(
@@ -115,6 +171,9 @@ export default function ProfileScreen({ navigation }: Props) {
       }
 
       if (!uploaded.url && uploadUri !== originalUri) {
+        if (!isProfilePictureWithinLimit(originalUri, originalSize)) {
+          return;
+        }
         uploaded = await uploadProfilePicture(originalUri, originalMimeType);
       }
 
@@ -131,7 +190,7 @@ export default function ProfileScreen({ navigation }: Props) {
     } finally {
       setIsUploadingPic(false);
     }
-  }, [refreshProfile]);
+  }, [refreshProfile, isProfilePictureWithinLimit]);
 
   // ── Save text profile ────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {

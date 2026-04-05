@@ -32,6 +32,7 @@ import { getApiErrorMessage } from '../utils/auth';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'GroupInfo'>;
 const MIN_GROUP_NAME_LENGTH = 2;
+const MAX_GROUP_NAME_LENGTH = 80;
 
 function getInitials(name: string): string {
   return name
@@ -152,6 +153,10 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
     }
     if (name.length < MIN_GROUP_NAME_LENGTH) {
       setNameError(`Group name must be at least ${MIN_GROUP_NAME_LENGTH} characters.`);
+      return;
+    }
+    if (name.length > MAX_GROUP_NAME_LENGTH) {
+      setNameError(`Group name must be at most ${MAX_GROUP_NAME_LENGTH} characters.`);
       return;
     }
     if (name === groupName) {
@@ -322,7 +327,7 @@ export default function GroupInfoScreen({ navigation, route }: Props) {
                     if (nameError) setNameError('');
                   }}
                   autoFocus
-                  maxLength={80}
+                  maxLength={MAX_GROUP_NAME_LENGTH}
                   selectTextOnFocus
                   onSubmitEditing={handleSaveName}
                 />
