@@ -1005,6 +1005,11 @@ function MessageBubble({
   const showPendingSendStatus = isOwn && isOptimistic && sendStatus === 'sending';
   const showFailedSendStatus = isOwn && isOptimistic && sendStatus === 'failed';
 
+  const languageContext = useMemo(
+    () => ({ preferredLanguage, showTranslatedOnly }),
+    [preferredLanguage, showTranslatedOnly],
+  );
+
   // Cap bubble width on large screens so messages do not become overly wide.
   const rowMaxWidth = useMemo(
     () => Math.min(Math.round(screenWidth * 0.78), 620),
@@ -1232,7 +1237,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeOwn, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeOwn, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation, preferredLanguage, showTranslatedOnly]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -1345,20 +1350,21 @@ function MessageBubble({
               </Pressable>
             )}
 
-            {/* Translation card */}
-            <TranslationSection
-              isOwn={isOwn}
-              showMediating={showMediating}
-              isRetrying={isRetrying}
-              isOptimistic={isOptimistic}
-              contentType={contentType}
-              translations={translations}
-              translatedAudioUrls={message.translatedAudioUrls}
-              preferredLanguage={preferredLanguage}
-              confidenceScore={confidenceScore}
-              messageId={message.id}
-              onRetry={onRetry}
-            />
+            {!(showTranslatedOnly && !isOwn) && (
+              <TranslationSection
+                isOwn={isOwn}
+                showMediating={showMediating}
+                isRetrying={isRetrying}
+                isOptimistic={isOptimistic}
+                contentType={contentType}
+                translations={translations}
+                translatedAudioUrls={message.translatedAudioUrls}
+                preferredLanguage={preferredLanguage}
+                confidenceScore={confidenceScore}
+                messageId={message.id}
+                onRetry={onRetry}
+              />
+            )}
 
             {/* Action cards — meetings, reminders extracted by AI */}
             {message.extractedActions && message.extractedActions.length > 0 && (

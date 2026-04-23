@@ -6,7 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchDocumentSummary, type SummaryBullet } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -114,7 +114,7 @@ export default memo(function DocumentBubbleContent({
     : colors.primaryFaded;
 
   return (
-    <Animated.View style={styles.container} layout={LinearTransition.duration(250)}>
+    <Animated.View style={styles.container}>
       {/* ── Document card: tappable to open interrogation ── */}
       <Pressable
         onPress={interrogationReady ? onOpenInterrogation : undefined}
