@@ -34,6 +34,7 @@ import { useChatList } from '../../contexts/ChatListContext';
 import { useChatAudioPlayer } from '../../contexts/ChatAudioPlayerContext';
 import DocumentBubbleContent from './DocumentBubbleContent';
 import ActionCard, { type ExtractedAction } from './ActionCard';
+import TranslationUnavailable from './TranslationUnavailable';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Translations {
@@ -986,6 +987,7 @@ function MessageBubble({
     selectedIdsMap,
     highlightedMessageId,
     preferredLanguage,
+    showTranslatedOnly,
   } = useChatList();
 
   const isOwn = message.senderId === currentUserId;
@@ -1111,11 +1113,22 @@ function MessageBubble({
       case 'TEXT': {
         const sentTimeStr = message.createdAt ? formatSentTime(message.createdAt) : null;
         const sentTimeColor = isOwn ? colors.audioTimeOwn : colors.audioTimeReceived;
+
         return (
           <View style={styles.textContentWrap}>
-            <Text style={[styles.messageText, { color: isOwn ? colors.bubbleOwnText : colors.bubbleReceivedText }]}>
-              {rawContent}
-            </Text>
+            {showTranslatedOnly && !isOwn ? (
+              translations?.[preferredLanguage] !== undefined ? (
+                <Text style={[styles.messageText, { color: colors.bubbleReceivedText }]}>
+                  {translations[preferredLanguage]}
+                </Text>
+              ) : (
+                <TranslationUnavailable onRetry={onRetry ? () => onRetry(message.id) : () => {}} />
+              )
+            ) : (
+              <Text style={[styles.messageText, { color: isOwn ? colors.bubbleOwnText : colors.bubbleReceivedText }]}>
+                {rawContent}
+              </Text>
+            )}
             {sentTimeStr !== null && (
               <Text style={[styles.textSentTime, { color: sentTimeColor }]}>{sentTimeStr}</Text>
             )}

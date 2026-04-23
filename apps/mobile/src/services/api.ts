@@ -318,6 +318,13 @@ export async function retranslateMessage(messageId: string): Promise<Translation
   return data;
 }
 
+export async function retryTranslation(messageId: string): Promise<TranslationResult> {
+  const { data } = await apiClient.post<TranslationResult>(
+    `/chat/messages/${messageId}/retranslate`,
+  );
+  return data;
+}
+
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
 export interface AudioProcessResult {

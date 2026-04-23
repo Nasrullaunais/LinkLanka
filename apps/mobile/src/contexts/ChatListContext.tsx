@@ -10,6 +10,7 @@ interface ChatListContextType {
   /** SharedValue so highlight changes drive UI-thread animations without JS re-renders. */
   highlightedMessageId: SharedValue<string | null>;
   preferredLanguage: PreferredLanguage;
+  showTranslatedOnly: boolean;
 }
 
 const ChatListContext = createContext<ChatListContextType | null>(null);
@@ -20,13 +21,14 @@ export function ChatListProvider({
   selectedIdsMap,
   highlightedMessageId,
   preferredLanguage,
+  showTranslatedOnly,
   children,
 }: ChatListContextType & { children: React.ReactNode }) {
   const value = useMemo(
-    () => ({ selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage }),
+    () => ({ selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage, showTranslatedOnly }),
     // selectionModeProgress, selectedIdsMap & highlightedMessageId are stable
     // SharedValue references — their .value changing does NOT recreate this memo.
-    [selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage],
+    [selectionMode, selectionModeProgress, selectedIdsMap, highlightedMessageId, preferredLanguage, showTranslatedOnly],
   );
 
   return (

@@ -42,6 +42,7 @@ import type { AppStackParamList } from '../navigation/types';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useChatSelection } from '../hooks/useChatSelection';
 import { useChatEdit } from '../hooks/useChatEdit';
+import { getTranslatedOnlyMode } from '../services/secureStorage';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'Chat'>;
 
@@ -251,6 +252,15 @@ export default function ChatScreen({ navigation, route }: Props) {
     (initialLang as PreferredLanguage) ?? (userDialect as PreferredLanguage) ?? 'english',
   );
   const [isLanguagePickerOpen, setIsLanguagePickerOpen] = useState(false);
+
+  // ── Translated-only preference ──────────────────────────────────────────
+  const [showTranslatedOnly, setShowTranslatedOnly] = useState<boolean>(false);
+
+  useEffect(() => {
+    getTranslatedOnlyMode().then((value) => {
+      setShowTranslatedOnly(value);
+    });
+  }, []);
 
   useEffect(() => {
     if (!ENABLE_CHAT_PERF_METRICS) return;
@@ -740,6 +750,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           selectedIdsMap={selectedIdsMap}
           highlightedMessageId={highlightedMessageId}
           preferredLanguage={preferredLanguage}
+          showTranslatedOnly={showTranslatedOnly}
         >
           <ChatAudioPlayerProvider>
           <MediatingAnimProvider>

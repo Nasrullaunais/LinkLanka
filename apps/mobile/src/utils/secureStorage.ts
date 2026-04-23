@@ -31,3 +31,14 @@ export async function deleteSecureItem(key: string): Promise<void> {
   }
   await SecureStore.deleteItemAsync(key);
 }
+
+const TRANSLATED_ONLY_MODE_KEY = 'translated_only_mode';
+
+export async function getTranslatedOnlyMode(): Promise<boolean> {
+  const value = await getSecureItem(TRANSLATED_ONLY_MODE_KEY);
+  return value === 'true';
+}
+
+export async function setTranslatedOnlyMode(value: boolean): Promise<void> {
+  await setSecureItem(TRANSLATED_ONLY_MODE_KEY, String(value));
+}

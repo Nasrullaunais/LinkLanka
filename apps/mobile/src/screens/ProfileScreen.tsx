@@ -5,6 +5,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -20,6 +21,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { updateProfile, uploadProfilePicture } from '../services/api';
+import { getTranslatedOnlyMode, setTranslatedOnlyMode } from '../utils/secureStorage';
 import type { AppStackParamList } from '../navigation/types';
 import { getApiErrorMessage } from '../utils/auth';
 
@@ -66,6 +68,7 @@ export default function ProfileScreen({ navigation }: Props) {
 
   const [displayName, setDisplayName] = useState(userDisplayName ?? '');
   const [dialect, setDialect] = useState(userDialect ?? 'english');
+  const [translatedOnlyMode, setTranslatedOnlyModeState] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPic, setIsUploadingPic] = useState(false);
   const [formError, setFormError] = useState('');
@@ -101,6 +104,11 @@ export default function ProfileScreen({ navigation }: Props) {
     // Auth profile refresh is authoritative; clear local optimistic override.
     setPendingAvatarUrl(null);
   }, [userProfilePicture]);
+
+  // Load translated-only mode preference on mount.
+  useEffect(() => {
+    getTranslatedOnlyMode().then(setTranslatedOnlyModeState);
+  }, []);
 
   // ── Profile picture upload flow ──────────────────────────────────────────
   const handlePickImage = useCallback(async () => {
@@ -312,6 +320,28 @@ export default function ProfileScreen({ navigation }: Props) {
           This sets your default translation language across all chats. You can override it per conversation.
         </Text>
 
+        {/* Translated-Only Mode Toggle */}
+        <View style={[styles.toggleRow, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+          <View style={styles.toggleRowLeft}>
+            <Ionicons name="language-outline" size={20} color={colors.primary} />
+            <View style={styles.toggleRowTextContainer}>
+              <Text style={[styles.toggleRowText, { color: colors.modalText }]}>Translated-Only Mode</Text>
+              <Text style={[styles.toggleRowHint, { color: colors.textTertiary }]}>
+                Show only translated messages
+              </Text>
+            </View>
+          </View>
+          <Switch
+            value={translatedOnlyMode}
+            onValueChange={async (value) => {
+              setTranslatedOnlyModeState(value);
+              await setTranslatedOnlyMode(value);
+            }}
+            trackColor={{ false: colors.border, true: colors.primaryFaded }}
+            thumbColor="#fff"
+          />
+        </View>
+
         {/* My Dictionary link */}
         <Pressable
           style={[styles.dictionaryRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -413,6 +443,21 @@ const styles = StyleSheet.create({
   dictionaryRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   dictionaryRowText: { fontSize: 15, fontWeight: '600' },
   dictionaryHint: { fontSize: 12, alignSelf: 'flex-start', marginBottom: 32 },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  toggleRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  toggleRowTextContainer: { flexDirection: 'column' },
+  toggleRowText: { fontSize: 15, fontWeight: '600' },
+  toggleRowHint: { fontSize: 12 },
   errorText: {
     width: '100%',
     fontSize: 13,

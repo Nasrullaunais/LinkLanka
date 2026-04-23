@@ -1,0 +1,41 @@
+{
+  "active_plan": "/home/nasrulla/All Files/Projects/LinkLankaV2/.sisyphus/plans/translated-only-mode.md",
+  "started_at": "2026-04-23T13:32:06.448Z",
+  "session_ids": [
+    "ses_245860242ffe6D0GSxWIPfsRlK"
+  ],
+  "session_origins": {
+    "ses_245860242ffe6D0GSxWIPfsRlK": "direct"
+  },
+  "plan_name": "translated-only-mode",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Add showTranslatedOnly state to ChatListContext",
+      "session_id": "ses_2457354b1ffenRT2a0gp9XLwXU",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-23T13:35:40.654Z"
+    },
+    "todo:5": {
+      "task_key": "todo:5",
+      "task_label": "5",
+      "task_title": "Modify MessageBubble TEXT case",
+      "session_id": "ses_2456ef83cffe7yQhKDxn3U2QWF",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-23T13:43:11.813Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — Verify all acceptance criteria",
+      "session_id": "ses_24565e32affevtsZn43L0SRpnY",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-23T13:50:33.704Z"
+    }
+  }
+}
