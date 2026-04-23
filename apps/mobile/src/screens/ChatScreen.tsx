@@ -42,7 +42,7 @@ import type { AppStackParamList } from '../navigation/types';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useChatSelection } from '../hooks/useChatSelection';
 import { useChatEdit } from '../hooks/useChatEdit';
-import { getTranslatedOnlyMode } from '../services/secureStorage';
+import { getTranslatedOnlyMode } from '../utils/secureStorage';
 
 type Props = NativeStackScreenProps<AppStackParamList, 'Chat'>;
 
