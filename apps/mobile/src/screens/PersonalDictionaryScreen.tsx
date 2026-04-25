@@ -836,11 +836,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   deleteButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 4,
   },
 
   emptyContainer: {
@@ -895,10 +891,15 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 22,
+    paddingBottom: Platform.OS === 'ios' ? 42 : 26,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 8,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -939,10 +940,11 @@ const styles = StyleSheet.create({
 
   input: {
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
     fontSize: 16,
+    marginTop: 2,
   },
   multilineInput: {
     minHeight: 86,
