@@ -409,7 +409,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
           </Text>
         </View>
         <Text style={[styles.totalCardSubtitle, { color: colors.textSecondary }]}> 
-          50 entries per language bucket. You can store up to 150 entries in total.
+          You can save up to {countSummary.totalMax} entries across all languages. Each language has its own bucket with a maximum capacity.
         </Text>
       </View>
 
@@ -473,7 +473,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
           <Ionicons name="arrow-back" size={24} color={colors.headerText} />
         </Pressable>
 
-        <Text style={[styles.headerTitle, { color: colors.headerText }]}>My Dictionary</Text>
+        <Text style={[styles.headerTitle, { color: colors.headerText }]}>My Personal Dictionary</Text>
 
         <View style={[styles.headerCounter, { backgroundColor: colors.headerAvatarBg }]}> 
           <Text style={[styles.headerCounterText, { color: colors.headerText }]}> 
