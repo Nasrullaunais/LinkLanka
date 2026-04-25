@@ -797,12 +797,15 @@ const styles = StyleSheet.create({
   },
 
   entryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
   },
   entryContent: {
     flex: 1,
