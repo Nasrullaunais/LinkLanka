@@ -26,6 +26,8 @@ export const ALLOWED_MEDIA_MIMES = new Set([
   'audio/m4a',
   // Documents
   'application/pdf',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
 ]);
 
 export const ALLOWED_PROFILE_PICTURE_MIMES = new Set([
@@ -59,4 +61,6 @@ export const MIME_TO_EXT: Record<string, string> = {
   'audio/webm': '.webm',
   'audio/wav': '.wav',
   'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-excel': '.xls',
 };

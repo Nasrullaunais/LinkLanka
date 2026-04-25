@@ -4,7 +4,9 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
+import * as XLSX from 'xlsx';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -77,6 +79,7 @@ function resolvePreferredQALanguage(
 @Injectable()
 export class DocumentAiService {
   private readonly model: ChatGoogleGenerativeAI;
+  private readonly logger = new Logger(DocumentAiService.name);
 
   constructor(
     @InjectRepository(Message)
@@ -143,14 +146,66 @@ export class DocumentAiService {
       '.docx':
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       '.txt': 'text/plain',
+      '.xlsx':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls': 'application/vnd.ms-excel',
     };
     return map[ext] ?? 'application/octet-stream';
+  }
+
+  /**
+   * Convert an Excel workbook buffer to a CSV string.
+   * Each sheet is prepended with ## Sheet: {sheetName}\n header.
+   * Caps at 10 sheets, logs warning for remainder.
+   * Handles password-protected and corrupt files via BadRequestException.
+   */
+  private convertExcelToCsv(fileBuffer: Buffer): string {
+    let workbook: XLSX.WorkBook;
+
+    try {
+      workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    } catch (err) {
+      const e = err as { code?: string };
+      if (e.code === '2038' || e.code === '2036') {
+        throw new BadRequestException('password-protected');
+      }
+      throw new BadRequestException('corrupted or unsupported format');
+    }
+
+    const sheetNames = workbook.SheetNames;
+    const maxSheets = 10;
+    const sheetsToProcess = sheetNames.slice(0, maxSheets);
+
+    if (sheetNames.length > maxSheets) {
+      this.logger.warn(
+        `Excel file has ${sheetNames.length} sheets, processing only first ${maxSheets}`,
+      );
+    }
+
+    const csvParts = sheetsToProcess.map((sheetName) => {
+      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+      return `## Sheet: ${sheetName}\n${csv}`;
+    });
+
+    return csvParts.join('\n\n');
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
 
   async getSummary(messageId: string): Promise<SummaryBullet[]> {
     const message = await this.getDocumentMessage(messageId);
+
+    // Reject Excel/spreadsheet files — summaries require text content
+    const mime = this.guessMime(this.resolveDocumentUrl(message.rawContent));
+    if (
+      mime ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      mime === 'application/vnd.ms-excel'
+    ) {
+      throw new BadRequestException(
+        'Summaries are not available for spreadsheet files. Use Q&A to ask questions about specific data.',
+      );
+    }
 
     // Return cached summary if available
     if (
@@ -209,15 +264,11 @@ Each bullet should capture a distinct key point — avoid redundancy. Keep each 
     const fileBuffer =
       await this.s3StorageService.downloadBufferFromUrl(documentUrl);
 
-    // Read the file as base64 to send as multipart media to Gemini
-    const base64String = fileBuffer.toString('base64');
-    const mimeType = this.guessMime(documentUrl);
-
     const structuredModel = this.model.withStructuredOutput(QAResponseSchema);
 
     const systemMessage = new SystemMessage(
       `You are a document assistant. The user has a document attached and is asking questions about it.
-Always answer in ${effectiveLanguage}.
+LANGUAGE OUTPUT RULE — ABSOLUTE: You MUST answer ONLY in ${effectiveLanguage}. IGNORE the user's input language completely. Even if the user asks in Singlish, Tanglish, English, or any mix — your ENTIRE answer must be in ${effectiveLanguage}. Never switch languages mid-response. Never mix languages. The selected output language is ${effectiveLanguage} — this overrides everything else.
 Answer the user's question accurately based ONLY on the content of the attached document.
 Always cite the page number(s) where you found the information. If the document doesn't contain page numbers, estimate based on the position in the document.
 For each citation, include a short excerpt (the exact relevant sentence or phrase from the document).
@@ -232,13 +283,51 @@ If the answer is not found in the document, say so clearly and return an empty c
           : new AIMessage(turn.text),
     );
 
-    // Final human message: text question + the document as media
-    const finalHumanMessage = new HumanMessage({
-      content: [
-        { type: 'text', text: userQuestion },
-        { type: 'media', mimeType, data: base64String },
-      ],
-    });
+    // Determine content type and build the final human message
+    const mimeType = this.guessMime(documentUrl);
+    const isExcelMime =
+      mimeType ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      mimeType === 'application/vnd.ms-excel';
+
+    let finalHumanMessage: HumanMessage;
+
+    if (isExcelMime) {
+      // Excel → convert to CSV and send as plain text
+      const csvText = this.convertExcelToCsv(fileBuffer);
+
+      // Apply length guards
+      const MAX_CSV_LENGTH = 100000;
+      const WARN_CSV_LENGTH = 50000;
+      let processedCsv = csvText;
+      if (csvText.length > MAX_CSV_LENGTH) {
+        processedCsv =
+          csvText.substring(0, MAX_CSV_LENGTH) +
+          '\n\n[Note: CSV truncated at 100,000 characters. Ask about specific sections if needed.]';
+      } else if (csvText.length > WARN_CSV_LENGTH) {
+        this.logger.warn(
+          `Excel CSV is ${csvText.length} chars, may be large for Gemini`,
+        );
+      }
+
+      finalHumanMessage = new HumanMessage({
+        content: [
+          {
+            type: 'text',
+            text: `Document CSV content:\n\n${processedCsv}\n\nUser question: ${userQuestion}`,
+          },
+        ],
+      });
+    } else {
+      // Non-Excel → read as base64 and send as multipart media
+      const base64String = fileBuffer.toString('base64');
+      finalHumanMessage = new HumanMessage({
+        content: [
+          { type: 'text', text: userQuestion },
+          { type: 'media', mimeType, data: base64String },
+        ],
+      });
+    }
 
     return structuredModel.invoke([
       systemMessage,

@@ -1,6 +1,7 @@
 import * as path from 'path';
 
 import {
+  BadRequestException,
   Controller,
   ForbiddenException,
   Get,
@@ -175,15 +176,22 @@ export class ChatController {
             originalTone: result.originalTone,
           });
       } else {
+        const ext = path.extname(message.rawContent).toLowerCase();
+        if (ext === '.xlsx' || ext === '.xls') {
+          throw new BadRequestException(
+            'Spreadsheet files cannot be retranslated. Use Document Q&A to ask questions about this file.',
+          );
+        }
+
         const mediaRef = this.resolveStoredMediaReference(message.rawContent);
         const mediaBuffer = await this.loadMediaBuffer(mediaRef);
-        const ext = mediaRef.fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
+        const fileExt = mediaRef.fileName.split('.').pop()?.toLowerCase() ?? 'jpg';
         const fileMimeType =
-          ext === 'pdf'
+          fileExt === 'pdf'
             ? 'application/pdf'
-            : ext === 'png'
+            : fileExt === 'png'
               ? 'image/png'
-              : ext === 'gif'
+              : fileExt === 'gif'
                 ? 'image/gif'
                 : 'image/jpeg';
         result = await this.translationService.translateIntent({
