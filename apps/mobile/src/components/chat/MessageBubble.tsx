@@ -60,6 +60,8 @@ export interface ChatMessage {
   translatedAudioUrls?: TranslatedAudioUrls | null;
   confidenceScore?: number | null;
   extractedActions?: ExtractedAction[] | null;
+  /** Original filename from the sender's device (DOCUMENT type only). */
+  fileName?: string | null;
   isOptimistic?: boolean;
   sendStatus?: 'sending' | 'failed' | 'sent';
   sendFailureReason?: string | null;
@@ -95,6 +97,7 @@ interface MessageBubbleProps {
       | 'mixed'
       | 'unknown'
       | null,
+    fileName?: string,
   ) => void;
 }
 
@@ -1215,12 +1218,14 @@ function MessageBubble({
             fileUrl={rawContent}
             isOwn={isOwn}
             isPendingUpload={Boolean(message.isOptimistic && sendStatus === 'sending')}
+            fileName={message.fileName ?? null}
             onOpenInterrogation={() =>
               onOpenDocumentInterrogation?.(
                 message.id,
                 rawContent,
                 undefined,
                 message.detectedLanguage,
+                message.fileName ?? undefined,
               )
             }
             onOpenInterrogationAtPage={(page) =>
@@ -1229,6 +1234,7 @@ function MessageBubble({
                 rawContent,
                 page,
                 message.detectedLanguage,
+                message.fileName ?? undefined,
               )
             }
           />

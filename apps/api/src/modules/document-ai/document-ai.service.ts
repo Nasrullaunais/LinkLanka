@@ -190,6 +190,43 @@ export class DocumentAiService {
     return csvParts.join('\n\n');
   }
 
+  // ── CSV export (spreadsheet preview) ─────────────────────────────────────
+
+  async getCsvContent(messageId: string): Promise<{
+    csv: string;
+    sheetNames: string[];
+  }> {
+    const message = await this.getDocumentMessage(messageId);
+    const documentUrl = this.resolveDocumentUrl(message.rawContent);
+    const fileBuffer =
+      await this.s3StorageService.downloadBufferFromUrl(documentUrl);
+
+    const mime = this.guessMime(documentUrl);
+    if (
+      mime !==
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' &&
+      mime !== 'application/vnd.ms-excel'
+    ) {
+      throw new BadRequestException(
+        'CSV export is only available for spreadsheet files',
+      );
+    }
+
+    const csv = this.convertExcelToCsv(fileBuffer);
+
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    } catch {
+      throw new BadRequestException('Failed to parse spreadsheet');
+    }
+
+    return {
+      csv,
+      sheetNames: workbook.SheetNames.slice(0, 10),
+    };
+  }
+
   // ── Summary ──────────────────────────────────────────────────────────────
 
   async getSummary(messageId: string): Promise<SummaryBullet[]> {

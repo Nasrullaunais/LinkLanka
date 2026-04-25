@@ -860,6 +860,24 @@ export async function fetchDocumentSummary(
 }
 
 /**
+ * Fetch CSV content for a spreadsheet message. Only available for .xlsx/.xls files.
+ * Returns the full CSV text and sheet names for tab navigation.
+ */
+export interface SpreadsheetCsvResponse {
+  csv: string;
+  sheetNames: string[];
+}
+
+export async function fetchSpreadsheetCsv(
+  messageId: string,
+): Promise<SpreadsheetCsvResponse> {
+  const { data } = await apiClient.get<SpreadsheetCsvResponse>(
+    `/document-ai/${messageId}/csv`,
+  );
+  return data;
+}
+
+/**
  * Ask a question about a document. The backend sends the full file to Gemini
  * alongside the chat history. Returns an answer with page-level citations.
  */

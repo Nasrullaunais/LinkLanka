@@ -21,6 +21,7 @@ import WebView from 'react-native-webview';
 import {
   askDocumentQuestion,
   API_BASE_URL,
+  fetchSpreadsheetCsv,
   type QAChatTurn,
   type QACitation,
 } from '../../services/api';
@@ -55,6 +56,8 @@ interface DocumentInterrogationModalProps {
     | 'mixed'
     | 'unknown'
     | null;
+  /** Original filename from the sender's device. */
+  fileName?: string;
   /** Optional initial page to scroll to (from summary bullet tap). */
   initialPage?: number;
   onClose: () => void;
@@ -106,13 +109,27 @@ function generateId(): string {
 }
 
 function extractFilename(url: string): string {
-  const segments = url.split('/');
+  const cleanUrl = url.split('?')[0];
+  const segments = cleanUrl.split('/');
   const raw = segments[segments.length - 1] ?? 'Document';
   if (raw.length > 40) {
     const ext = raw.split('.').pop() ?? '';
     return `Document.${ext}`;
   }
   return raw;
+}
+
+/** Get lowercase file extension from URL (e.g. ".xlsx" → "xlsx"). */
+function getFileExtension(url: string): string {
+  const segments = url.split('/').pop() ?? '';
+  const ext = segments.split('?')[0].split('.').pop() ?? '';
+  return ext.toLowerCase();
+}
+
+/** Check whether the URL points to an Excel / spreadsheet file. */
+function isSpreadsheetFile(url: string): boolean {
+  const ext = getFileExtension(url);
+  return ext === 'xlsx' || ext === 'xls';
 }
 
 function extractOrigin(url: string): string {
@@ -166,6 +183,106 @@ function normalizeFileUrl(url: string): string {
   return url.replace(storedOrigin, currentOrigin);
 }
 
+// ── Spreadsheet WebView HTML builder ──────────────────────────────────────────
+function buildSpreadsheetViewerHtml(csv: string, sheetNames: string[]): string {
+  const escapedCsv = JSON.stringify(csv);
+  const escapedNames = JSON.stringify(sheetNames);
+
+  return `<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=3,user-scalable=yes">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;color:#1f2937}
+#tabs{display:flex;overflow-x:auto;background:#fff;border-bottom:2px solid #e5e7eb;position:sticky;top:0;z-index:10;-webkit-overflow-scrolling:touch}
+.tab{padding:10px 16px;font-size:13px;font-weight:500;color:#6b7280;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-2px;transition:color .15s,border-color .15s}
+.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+#container{padding:8px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+#container table{border-collapse:collapse;font-size:13px;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);min-width:100%}
+#container td,#container th{padding:8px 12px;border:1px solid #e5e7eb;white-space:nowrap;max-width:300px;overflow:hidden;text-overflow:ellipsis}
+#container th{background:#f9fafb;font-weight:600;color:#374151;text-align:left;position:sticky;top:0}
+#container tr:nth-child(even){background:#f9fafb}
+#loading{display:flex;align-items:center;justify-content:center;height:100vh;color:#6b7280;font-size:14px;flex-direction:column;gap:8px}
+</style></head><body>
+<div id="tabs"></div>
+<div id="container"><div id="loading">Rendering spreadsheet\u2026</div></div>
+<script>
+(function(){
+var CSV=${escapedCsv};
+var SHEET_NAMES=${escapedNames};
+var sheets=parseSheets(CSV,SHEET_NAMES);
+
+function parseSheets(csv,names){
+  var result={};
+  var currentName=names[0]||'Sheet1';
+  result[currentName]='';
+  var lines=csv.split('\\n');
+  for(var i=0;i<lines.length;i++){
+    if(lines[i].startsWith('## Sheet: ')){
+      currentName=lines[i].replace('## Sheet: ','');
+      result[currentName]='';
+    }else{
+      result[currentName]+=(result[currentName]?'\\n':'')+lines[i];
+    }
+  }
+  return result;
+}
+
+function renderSheet(name){
+  var rows=sheets[name];
+  if(!rows){document.getElementById('container').innerHTML='<table><tr><td>No data</td></tr></table>';return}
+  var lines=rows.split('\\n').filter(function(l){return l.trim()});
+  if(!lines.length){document.getElementById('container').innerHTML='<table><tr><td>Empty sheet</td></tr></table>';return}
+  var table='<table><thead><tr>';
+  var headers=parseCSVLine(lines[0]);
+  for(var h=0;h<headers.length;h++)table+='<th>'+escHtml(headers[h])+'</th>';
+  table+='</tr></thead><tbody>';
+  for(var r=1;r<lines.length;r++){
+    var cols=parseCSVLine(lines[r]);
+    table+='<tr>';
+    for(var c=0;c<Math.max(cols.length,headers.length);c++)table+='<td>'+(c<cols.length?escHtml(cols[c]):'')+'</td>';
+    table+='</tr>';
+  }
+  table+='</tbody></table>';
+  document.getElementById('container').innerHTML=table;
+}
+
+function parseCSVLine(line){
+  var result=[],current='',inQuote=false;
+  for(var i=0;i<line.length;i++){
+    var ch=line[i];
+    if(inQuote){if(ch==='"'){if(i+1<line.length&&line[i+1]==='"'){current+='"';i++}else{inQuote=false}}else{current+=ch}}
+    else if(ch==='"'){inQuote=true}
+    else if(ch===','){result.push(current);current=''}
+    else{current+=ch}
+  }
+  result.push(current);
+  return result;
+}
+
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+// Render tabs
+var names=Object.keys(sheets);
+var tabsEl=document.getElementById('tabs');
+if(names.length>1){
+  names.forEach(function(name,i){
+    var btn=document.createElement('button');
+    btn.className='tab'+(i===0?' active':'');
+    btn.textContent=name;
+    btn.onclick=function(){renderSheet(name);
+      document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
+      btn.classList.add('active');
+    };
+    tabsEl.appendChild(btn);
+  });
+}else{
+  tabsEl.style.display='none';
+}
+renderSheet(names[0]);
+})();
+<\/script></body></html>`;
+}
+
 // ── PDF.js WebView HTML builder ──────────────────────────────────────────────
 function buildPdfViewerHtml(pdfUrl: string): string {
   const safeUrl = pdfUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -215,6 +332,7 @@ export default function DocumentInterrogationModal({
   fileUrl,
   detectedLanguage,
   initialPage,
+  fileName,
   onClose,
 }: DocumentInterrogationModalProps) {
   const insets = useSafeAreaInsets();
@@ -236,7 +354,42 @@ export default function DocumentInterrogationModal({
   const [resolvedFileUrl, setResolvedFileUrl] = useState(() =>
     normalizeFileUrl(fileUrl),
   );
+  const [csvData, setCsvData] = useState<string | null>(null);
+  const [csvSheetNames, setCsvSheetNames] = useState<string[]>([]);
+  const [csvLoading, setCsvLoading] = useState(false);
   const { colors } = useTheme();
+
+  // ── Fetch CSV for spreadsheets ──────────────────────────────────────────
+  useEffect(() => {
+    if (!visible || !messageId || !isSpreadsheetFile(resolvedFileUrl)) {
+      return;
+    }
+
+    let cancelled = false;
+    setCsvLoading(true);
+
+    fetchSpreadsheetCsv(messageId)
+      .then((result) => {
+        if (!cancelled) {
+          setCsvData(result.csv);
+          setCsvSheetNames(result.sheetNames);
+          setCsvLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPdfError(true);
+          setPdfErrorMessage(
+            'Failed to load spreadsheet data. The file may be too large or inaccessible.',
+          );
+          setCsvLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, messageId, resolvedFileUrl]);
 
   // ── Reset state when modal opens ───────────────────────────────────────
   useEffect(() => {
@@ -548,7 +701,7 @@ export default function DocumentInterrogationModal({
     [goToPage, colors],
   );
 
-  const filename = extractFilename(resolvedFileUrl);
+  const displayFilename = fileName ?? extractFilename(resolvedFileUrl);
   const selectedLanguageLabel =
     LANGUAGE_OPTIONS.find((option) => option.key === selectedLanguage)?.label ??
     'English';
@@ -573,7 +726,7 @@ export default function DocumentInterrogationModal({
           <View style={styles.headerTitleContainer}>
             <Ionicons name="document-text" size={18} color={colors.primary} />
             <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
-              {filename}
+              {displayFilename}
             </Text>
           </View>
           <View style={styles.headerRight}>
@@ -594,9 +747,35 @@ export default function DocumentInterrogationModal({
           </View>
         </View>
 
-        {/* ── Top half: PDF viewer ── */}
-        <View style={[styles.pdfContainer, { backgroundColor: colors.surface }]}>
-          {pdfError ? (
+        {/* ── Top half: Document viewer ── */}
+        <View style={[styles.docViewer, { backgroundColor: colors.surface }]}>
+          {isSpreadsheetFile(resolvedFileUrl) ? (
+            csvLoading ? (
+              <View style={styles.spreadsheetLoading}>
+                <ActivityIndicator size="large" color={colors.spinnerColor} />
+                <Text style={[styles.spreadsheetHint, { color: colors.textSecondary }]}>
+                  Loading spreadsheet data…
+                </Text>
+              </View>
+            ) : csvData != null ? (
+              <WebView
+                ref={webViewRef}
+                source={{ html: buildSpreadsheetViewerHtml(csvData, csvSheetNames) }}
+                originWhitelist={['*']}
+                javaScriptEnabled
+                mixedContentMode="always"
+                onMessage={handleWebViewMessage}
+                style={styles.pdf}
+              />
+            ) : (
+              <View style={styles.pdfErrorContainer}>
+                <Ionicons name="alert-circle-outline" size={48} color={colors.emptyIcon} />
+                <Text style={[styles.pdfErrorText, { color: colors.emptyText }]}>
+                  {pdfErrorMessage ?? 'Unable to render document preview'}
+                </Text>
+              </View>
+            )
+          ) : pdfError ? (
             <View style={styles.pdfErrorContainer}>
               <Ionicons name="alert-circle-outline" size={48} color={colors.emptyIcon} />
               <Text style={[styles.pdfErrorText, { color: colors.emptyText }]}>
@@ -751,6 +930,45 @@ const styles = StyleSheet.create({
   pageIndicator: {
     fontSize: 13,
     fontWeight: '500',
+  },
+  // ── Document viewer (PDF / spreadsheet placeholder)
+  docViewer: {
+    height: PDF_PANEL_HEIGHT,
+  },
+  // ── Spreadsheet placeholder
+  spreadsheetPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    gap: 8,
+  },
+  spreadsheetIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  spreadsheetLabel: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  spreadsheetSublabel: {
+    fontSize: 13,
+  },
+  spreadsheetHint: {
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginTop: 8,
+  },
+  spreadsheetLoading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
   },
   // ── PDF
   pdfContainer: {

@@ -394,7 +394,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     fileUrl: string;
     initialPage?: number;
     detectedLanguage?: ChatMessage['detectedLanguage'];
-  }>({ visible: false, messageId: '', fileUrl: '' });
+  }>({ visible: false, messageId: '', fileUrl: '', fileName: undefined });
 
   const handleOpenDocumentInterrogation = useCallback(
     (
@@ -402,6 +402,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       fileUrl: string,
       initialPage?: number,
       detectedLanguage?: ChatMessage['detectedLanguage'],
+      fileName?: string,
     ) => {
       setDocModal({
         visible: true,
@@ -409,6 +410,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         fileUrl,
         initialPage,
         detectedLanguage,
+        fileName,
       });
     },
     [],
@@ -820,6 +822,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         fileUrl={docModal.fileUrl}
         detectedLanguage={docModal.detectedLanguage}
         initialPage={docModal.initialPage}
+        fileName={docModal.fileName}
         onClose={handleCloseDocumentInterrogation}
       />
 

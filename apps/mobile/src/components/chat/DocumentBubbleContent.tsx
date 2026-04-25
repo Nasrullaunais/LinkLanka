@@ -16,18 +16,17 @@ interface DocumentBubbleContentProps {
   fileUrl: string;
   isOwn: boolean;
   isPendingUpload?: boolean;
-  /** Called when the user taps the document card body (opens interrogation modal). */
+  /** Original filename from the sender's device (null when unknown). */
+  fileName?: string | null;
   onOpenInterrogation: () => void;
-  /** Called when the user taps a summary bullet with a page number. */
   onOpenInterrogationAtPage?: (page: number) => void;
 }
 
 /** Extract a human-readable filename from a server URL. */
 function extractFilename(url: string): string {
-  const segments = url.split('/');
+  const cleanUrl = url.split('?')[0];
+  const segments = cleanUrl.split('/');
   const raw = segments[segments.length - 1] ?? 'Document';
-  // Remove the leading UUID prefix (e.g., "a1b2c3d4-...-filename.pdf" → "filename.pdf")
-  // Server stores files as "uuid.ext", so just show it as-is but trim long UUIDs.
   if (raw.length > 40) {
     const ext = raw.split('.').pop() ?? '';
     return `Document.${ext}`;
@@ -37,14 +36,22 @@ function extractFilename(url: string): string {
 
 /** Map file extension to a display label. */
 function getFileTypeLabel(url: string): string {
-  const ext = (url.split('.').pop() ?? '').toLowerCase();
+  const cleanUrl = url.split('?')[0];
+  const ext = (cleanUrl.split('.').pop() ?? '').toLowerCase();
   const map: Record<string, string> = {
     pdf: 'PDF',
     doc: 'DOC',
     docx: 'DOCX',
     txt: 'TXT',
+    xlsx: 'XLSX',
+    xls: 'XLS',
   };
   return map[ext] ?? 'FILE';
+}
+
+function getFileExtension(url: string): string {
+  const segments = url.split('/').pop() ?? '';
+  return segments.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
 }
 
 export default memo(function DocumentBubbleContent({
@@ -52,6 +59,7 @@ export default memo(function DocumentBubbleContent({
   fileUrl,
   isOwn,
   isPendingUpload = false,
+  fileName = null,
   onOpenInterrogation,
   onOpenInterrogationAtPage,
 }: DocumentBubbleContentProps) {
@@ -61,7 +69,7 @@ export default memo(function DocumentBubbleContent({
   const [error, setError] = useState<string | null>(null);
   const { colors } = useTheme();
 
-  const filename = extractFilename(fileUrl);
+  const displayFilename = fileName ?? extractFilename(fileUrl);
   const typeLabel = getFileTypeLabel(fileUrl);
   const isLocalFileUri = fileUrl.trim().startsWith('file://');
   const interrogationReady = !isPendingUpload && !isLocalFileUri;
@@ -83,6 +91,12 @@ export default memo(function DocumentBubbleContent({
       return;
     }
 
+    const ext = getFileExtension(fileUrl);
+    if (ext === 'xlsx' || ext === 'xls') {
+      setError('Summaries are not available for spreadsheets. Tap the document to ask questions instead.');
+      return;
+    }
+
     // Fetch from API
     setIsLoading(true);
     setError(null);
@@ -96,7 +110,7 @@ export default memo(function DocumentBubbleContent({
     } finally {
       setIsLoading(false);
     }
-  }, [messageId, bullets, isExpanded, interrogationReady]);
+  }, [messageId, bullets, isExpanded, interrogationReady, fileUrl]);
 
   const handleBulletPress = useCallback(
     (bullet: SummaryBullet) => {
@@ -128,7 +142,7 @@ export default memo(function DocumentBubbleContent({
         </View>
         <View style={styles.meta}>
           <Text style={[styles.filename, { color: isOwn ? '#fff' : colors.text }]} numberOfLines={1}>
-            {filename}
+            {displayFilename}
           </Text>
           <Text style={[styles.typeLabel, { color: isOwn ? 'rgba(255,255,255,0.7)' : colors.textSecondary }]}>{typeLabel}</Text>
           {!interrogationReady && (

@@ -51,6 +51,19 @@ export class DocumentAiController {
   constructor(private readonly documentAiService: DocumentAiService) {}
 
   /**
+   * GET /document-ai/:messageId/csv
+   *
+   * Exports the spreadsheet message content as CSV text. Only available for
+   * .xlsx and .xls files. Returns the full CSV text and sheet names.
+   */
+  @Get(':messageId/csv')
+  async getCsv(
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+  ): Promise<{ csv: string; sheetNames: string[] }> {
+    return this.documentAiService.getCsvContent(messageId);
+  }
+
+  /**
    * GET /document-ai/:messageId/summary
    *
    * Returns a cached (or freshly generated) 3-bullet summary for a DOCUMENT message.

@@ -24,6 +24,7 @@ export interface QueuedMediaJob {
   nextAttemptAt: number;
   audio?: QueuedAudioPayload;
   file?: QueuedFilePayload;
+  fileName?: string;
   lastError?: string;
 }
 

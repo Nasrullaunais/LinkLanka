@@ -56,6 +56,11 @@ export class Message {
   @Column({ type: 'text', name: 'raw_content', nullable: false })
   rawContent!: string;
 
+  /** Original filename (as provided by the sender's device). Only meaningful
+   *  for DOCUMENT content type. NULL for TEXT, AUDIO, and IMAGE messages. */
+  @Column({ type: 'varchar', name: 'file_name', length: 512, nullable: true })
+  fileName: string | null;
+
   @Column({
     type: 'varchar',
     name: 'client_temp_id',

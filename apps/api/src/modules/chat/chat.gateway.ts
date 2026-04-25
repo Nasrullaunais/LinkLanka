@@ -53,6 +53,7 @@ interface SendMessagePayload {
   audioMimeType?: string;
   fileUrl?: string;
   fileMimeType?: string;
+  fileName?: string;
   /** IANA timezone name of the sender's device, e.g. "Asia/Colombo" */
   timezone?: string;
 }
@@ -92,6 +93,8 @@ interface RawSendMessagePayload {
   file_url?: unknown;
   fileMimeType?: unknown;
   file_mime_type?: unknown;
+  fileName?: unknown;
+  file_name?: unknown;
   timezone?: unknown;
 }
 
@@ -288,6 +291,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       null, // translations — filled in Phase 2
       null, // confidenceScore — filled in Phase 2
       null, // extractedActions — filled in Phase 2
+      normalizedPayload.clientTempId ?? null,
+      normalizedPayload.fileName ?? null,
     );
 
     this.logger.log(
@@ -308,6 +313,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       senderId: userId,
       contentType: normalizedPayload.contentType,
       fileUrl: signedFileUrl ?? fileUrl ?? normalizedPayload.fileUrl,
+      fileName: message.fileName,
       transcription: null,
       originalText,
       translations: null,
@@ -933,6 +939,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const fileUrlValue: unknown = payload.fileUrl ?? payload.file_url;
     const fileMimeTypeValue: unknown =
       payload.fileMimeType ?? payload.file_mime_type;
+    const fileNameValue: unknown =
+      payload.fileName ?? payload.file_name;
     const nativeDialectValue: unknown = payload.nativeDialect ?? 'singlish';
     const targetLanguagesValue: unknown = payload.targetLanguages ?? [];
 
@@ -1032,6 +1040,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       fileUrl: typeof fileUrlValue === 'string' ? fileUrlValue : undefined,
       fileMimeType:
         typeof fileMimeTypeValue === 'string' ? fileMimeTypeValue : undefined,
+      fileName:
+        typeof fileNameValue === 'string' && fileNameValue.trim()
+          ? fileNameValue.trim()
+          : undefined,
       timezone:
         typeof payload.timezone === 'string' && payload.timezone.trim()
           ? payload.timezone.trim()

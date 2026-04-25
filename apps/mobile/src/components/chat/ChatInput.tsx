@@ -905,6 +905,8 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
           'application/msword',
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           'text/plain',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
         ],
         copyToCacheDirectory: true,
       });
@@ -919,7 +921,7 @@ export default function ChatInput({ onSendMessage }: ChatInputProps) {
         ) {
           return;
         }
-        onSendMessage({ type: 'DOCUMENT', content: asset.uri, mimeType: asset.mimeType ?? 'application/pdf' });
+        onSendMessage({ type: 'DOCUMENT', content: asset.uri, mimeType: asset.mimeType ?? 'application/pdf', originalFileName: asset.name });
       }
     } catch {
       Alert.alert('Error', 'Failed to pick document. Please try again.');

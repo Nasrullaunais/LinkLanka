@@ -95,6 +95,7 @@ export class ChatService {
     confidenceScore: number | null = null,
     extractedActions: ExtractedAction[] | null = null,
     clientTempId?: string | null,
+    fileName?: string | null,
   ): Promise<Message> {
     const normalizedClientTempId = this.normalizeClientTempId(clientTempId);
     if (normalizedClientTempId) {
@@ -121,6 +122,7 @@ export class ChatService {
       ...(confidenceScore !== null && { confidenceScore }),
       ...(extractedActions &&
         extractedActions.length > 0 && { extractedActions }),
+      ...(fileName != null && { fileName }),
     });
 
     try {

@@ -22,6 +22,8 @@ export interface ChatPayload {
   type: 'TEXT' | 'AUDIO' | 'IMAGE' | 'DOCUMENT';
   content: string;
   mimeType?: string;
+  /** Original filename from the device file picker (DOCUMENT type only). */
+  originalFileName?: string;
   /** Local file URI for AUDIO — allows the optimistic message to play back
    *  the recording from the device before the server URL is available. */
   localUri?: string;
@@ -35,6 +37,7 @@ interface NewMessageEvent {
   senderId: string;
   contentType: 'TEXT' | 'AUDIO' | 'IMAGE' | 'DOCUMENT';
   fileUrl?: string;
+  fileName?: string | null;
   transcription?: string | null;
   originalText?: string | null;
   translations?: {
@@ -107,6 +110,7 @@ interface HistoryMessage {
     singlish?: string;
     tanglish?: string;
   } | null;
+  fileName?: string | null;
   confidenceScore?: number | null;
   extractedActions?: {
     type: 'MEETING' | 'REMINDER';
@@ -227,6 +231,9 @@ function buildQueuedMediaJob(
         payload.mimeType ??
         (payload.type === 'DOCUMENT' ? 'application/pdf' : 'image/jpeg'),
     },
+    ...(payload.originalFileName
+      ? { fileName: payload.originalFileName }
+      : {}),
   };
 }
 
@@ -305,6 +312,7 @@ function historyToChatMessage(msg: HistoryMessage, currentUserId: string | null)
     translatedAudioUrls: msg.translatedAudioUrls ?? null,
     confidenceScore: msg.confidenceScore ?? null,
     extractedActions: msg.extractedActions ?? null,
+    fileName: msg.fileName ?? null,
     isOptimistic: false,
     isEdited: msg.isEdited ?? false,
     isTranslating: shouldMarkTranslating(
@@ -330,6 +338,7 @@ function serverEventToChatMessage(evt: NewMessageEvent, currentUserId: string | 
     translatedAudioUrls: evt.translatedAudioUrls ?? null,
     confidenceScore: evt.confidenceScore ?? null,
     extractedActions: evt.extractedActions ?? null,
+    fileName: evt.fileName ?? null,
     isOptimistic: false,
     isEdited: false,
     isTranslating: shouldMarkTranslating(
@@ -601,6 +610,7 @@ export function useChatMessages({
         contentType: job.mediaType,
         fileUrl: uploaded.url,
         ...(job.mediaType === 'DOCUMENT' ? { fileMimeType: mimeType } : {}),
+        ...(job.fileName ? { fileName: job.fileName } : {}),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
 
