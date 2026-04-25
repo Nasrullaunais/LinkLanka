@@ -840,10 +840,10 @@ const styles = StyleSheet.create({
   },
 
   emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
+     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
+    paddingVertical: 48,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
     fontSize: 18,
