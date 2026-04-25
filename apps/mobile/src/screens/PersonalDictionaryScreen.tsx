@@ -168,7 +168,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
     } catch (error) {
       Alert.alert(
         'Error',
-        getApiErrorMessage(error, 'Could not load your dictionary. Please try again.'),
+        getApiErrorMessage(error, 'Unable to load your dictionary. Please try again.'),
       );
     } finally {
       setIsLoading(false);
@@ -301,7 +301,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
       await loadData();
     } catch (error) {
       setSubmitError(
-        getApiErrorMessage(error, 'Could not save this dictionary entry. Please try again.'),
+        getApiErrorMessage(error, 'Unable to save this entry. Please try again.'),
       );
     } finally {
       setIsSubmitting(false);
@@ -333,7 +333,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
               } catch (error) {
                 Alert.alert(
                   'Error',
-                  getApiErrorMessage(error, 'Could not delete this dictionary entry.'),
+                  getApiErrorMessage(error, 'Unable to remove this dictionary entry.'),
                 );
               }
             },
@@ -631,7 +631,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
             </Text>
             {editingEntry ? (
               <Text style={[styles.immutableHint, { color: colors.textTertiary }]}> 
-                Word cannot be changed after creation.
+                This word cannot be changed after saving.
               </Text>
             ) : null}
 
@@ -669,27 +669,34 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
             ) : null}
 
             <Pressable
-              onPress={handleSubmit}
-              disabled={submitDisabled}
-              style={[
-                styles.submitButton,
-                {
-                  backgroundColor: submitDisabled ? colors.border : colors.primary,
-                },
-              ]}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text
-                  style={[
-                    styles.submitButtonText,
-                    { color: submitDisabled ? colors.textSecondary : '#fff' },
-                  ]}
-                >
-                  {editingEntry ? 'Save Changes' : 'Add Entry'}
-                </Text>
-              )}
+                onPress={handleSubmit}
+                disabled={submitDisabled}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: submitDisabled, busy: isSubmitting }}
+                style={[
+                  styles.submitButton,
+                  {
+                    backgroundColor: submitDisabled ? colors.border : colors.primary,
+                  },
+                ]}
+              >
+                {isSubmitting ? (
+                  <View style={styles.submitLoadingContent}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={[styles.submitButtonText, { color: '#fff' }]}>
+                      Saving...
+                    </Text>
+                  </View>
+                ) : (
+                  <Text
+                    style={[
+                      styles.submitButtonText,
+                      { color: submitDisabled ? colors.textSecondary : '#fff' },
+                    ]}
+                  >
+                    {editingEntry ? 'Save Changes' : 'Add Entry'}
+                  </Text>
+                )}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -951,5 +958,11 @@ const styles = StyleSheet.create({
   submitButtonText: {
     fontSize: 16,
     fontWeight: '700',
+  },
+  submitLoadingContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
 });
