@@ -32,6 +32,10 @@ import {
   TranslatedAudioUrls,
 } from '../translation/translation.service';
 import { S3StorageService } from '../../core/common/storage/s3-storage.service';
+import {
+  convertExcelToCsv,
+  isExcelMimeType,
+} from '../../core/common/converters/excel-to-csv.converter';
 
 interface JoinRoomPayload {
   groupId: string;
@@ -382,14 +386,31 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           normalizedPayload.fileUrl!,
         );
 
-        const result = await this.translationService.translateIntent({
-          mediaBase64: mediaBuffer.toString('base64'),
-          mediaMimeType: normalizedPayload.fileMimeType,
-          rawText: normalizedPayload.rawContent,
-          chatHistory: [],
-          userDictionary,
-          timezone: normalizedPayload.timezone,
-        });
+        let result: Awaited<
+          ReturnType<typeof this.translationService.translateIntent>
+        >;
+
+        if (isExcelMimeType(normalizedPayload.fileMimeType)) {
+          const csvText = convertExcelToCsv(mediaBuffer);
+          this.logger.log(
+            `Converted Excel to CSV (${csvText.length} chars) for translation messageId=${messageId}`,
+          );
+          result = await this.translationService.translateIntent({
+            rawText: csvText,
+            chatHistory: [],
+            userDictionary,
+            timezone: normalizedPayload.timezone,
+          });
+        } else {
+          result = await this.translationService.translateIntent({
+            mediaBase64: mediaBuffer.toString('base64'),
+            mediaMimeType: normalizedPayload.fileMimeType,
+            rawText: normalizedPayload.rawContent,
+            chatHistory: [],
+            userDictionary,
+            timezone: normalizedPayload.timezone,
+          });
+        }
 
         transcription = result.transcription;
         translations = result.translations;

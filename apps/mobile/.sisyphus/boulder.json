@@ -1,0 +1,49 @@
+{
+  "active_plan": "/home/nasrulla/All Files/Projects/LinkLankaV2/apps/mobile/.sisyphus/plans/document-ai-excel-language.md",
+  "started_at": "2026-04-25T01:19:11.310Z",
+  "session_ids": [
+    "ses_23de1f22bffeNLmbh1jYGzE1l4"
+  ],
+  "session_origins": {
+    "ses_23de1f22bffeNLmbh1jYGzE1l4": "direct"
+  },
+  "plan_name": "document-ai-excel-language",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Install `xlsx` dependency and update upload constants",
+      "session_id": "ses_23dc4e88afferRNodebjv6anMb",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-25T01:23:12.141Z"
+    },
+    "todo:4": {
+      "task_key": "todo:4",
+      "task_label": "4",
+      "task_title": "Integrate CSV conversion into `askQuestion()` for Excel files",
+      "session_id": "ses_23dc0ed8affeIVFYauDPvCxK3R",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-04-25T01:28:07.209Z"
+    },
+    "todo:8": {
+      "task_key": "todo:8",
+      "task_label": "8",
+      "task_title": "Write `document-ai.service.spec.ts` tests",
+      "session_id": "ses_23dbcc87affeOy4beftpPPNlni",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-04-25T01:57:19.544Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_23d80f212ffehDOEX3iNLzoxlT",
+      "agent": "oracle",
+      "updated_at": "2026-04-25T02:38:18.399Z"
+    }
+  }
+}

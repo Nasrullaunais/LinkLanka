@@ -20,6 +20,10 @@ import { z } from 'zod';
 
 import { Message, MessageContentType } from '../chat/entities/message.entity';
 import { S3StorageService } from '../../core/common/storage/s3-storage.service';
+import {
+  convertExcelToCsv,
+  isExcelMimeType,
+} from '../../core/common/converters/excel-to-csv.converter';
 
 // ── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -72,6 +76,28 @@ function resolvePreferredQALanguage(
   }
 
   return 'english';
+}
+
+function getQALanguageInstruction(language: PreferredQALanguage): string {
+  switch (language) {
+    case 'english':
+      return `- You are speaking in STANDARD ENGLISH. Use grammatically correct, natural English. Do NOT use any Singlish or Tanglish words or particles.`;
+
+    case 'singlish':
+      return `- You are speaking in SRI LANKAN SINGLISH — this is SINHALA words written in English characters, code-mixed with English.
+- This is NOT Singaporean English. It is Sri Lankan Sinhala-English code-mixing.
+- Use Singlish words naturally.
+- Mix English and Sinhala freely in the same sentence.
+- reflect the tone of the user.
+- Example sentence style: "me docuemnt eka semester 2 time table eka. "`;
+
+    case 'tanglish':
+      return `- You are speaking in SRI LANKAN TANGLISH — this is TAMIL words written in English characters, code-mixed with English.
+- Use Tanglish words naturally.
+- Mix English and Tamil freely in the same sentence.
+- reflect the tone of the user.
+- Example sentence style: "indha document la ungalda project description irukki"`;
+  }
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -153,41 +179,13 @@ export class DocumentAiService {
     return map[ext] ?? 'application/octet-stream';
   }
 
-  /**
-   * Convert an Excel workbook buffer to a CSV string.
-   * Each sheet is prepended with ## Sheet: {sheetName}\n header.
-   * Caps at 10 sheets, logs warning for remainder.
-   * Handles password-protected and corrupt files via BadRequestException.
-   */
   private convertExcelToCsv(fileBuffer: Buffer): string {
-    let workbook: XLSX.WorkBook;
-
     try {
-      workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      return convertExcelToCsv(fileBuffer);
     } catch (err) {
-      const e = err as { code?: string };
-      if (e.code === '2038' || e.code === '2036') {
-        throw new BadRequestException('password-protected');
-      }
+      if (err instanceof BadRequestException) throw err;
       throw new BadRequestException('corrupted or unsupported format');
     }
-
-    const sheetNames = workbook.SheetNames;
-    const maxSheets = 10;
-    const sheetsToProcess = sheetNames.slice(0, maxSheets);
-
-    if (sheetNames.length > maxSheets) {
-      this.logger.warn(
-        `Excel file has ${sheetNames.length} sheets, processing only first ${maxSheets}`,
-      );
-    }
-
-    const csvParts = sheetsToProcess.map((sheetName) => {
-      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
-      return `## Sheet: ${sheetName}\n${csv}`;
-    });
-
-    return csvParts.join('\n\n');
   }
 
   // ── CSV export (spreadsheet preview) ─────────────────────────────────────
@@ -202,11 +200,7 @@ export class DocumentAiService {
       await this.s3StorageService.downloadBufferFromUrl(documentUrl);
 
     const mime = this.guessMime(documentUrl);
-    if (
-      mime !==
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' &&
-      mime !== 'application/vnd.ms-excel'
-    ) {
+    if (!isExcelMimeType(mime)) {
       throw new BadRequestException(
         'CSV export is only available for spreadsheet files',
       );
@@ -303,13 +297,33 @@ Each bullet should capture a distinct key point — avoid redundancy. Keep each 
 
     const structuredModel = this.model.withStructuredOutput(QAResponseSchema);
 
+    const languageInstruction = getQALanguageInstruction(effectiveLanguage);
+
     const systemMessage = new SystemMessage(
-      `You are a document assistant. The user has a document attached and is asking questions about it.
-LANGUAGE OUTPUT RULE — ABSOLUTE: You MUST answer ONLY in ${effectiveLanguage}. IGNORE the user's input language completely. Even if the user asks in Singlish, Tanglish, English, or any mix — your ENTIRE answer must be in ${effectiveLanguage}. Never switch languages mid-response. Never mix languages. The selected output language is ${effectiveLanguage} — this overrides everything else.
-Answer the user's question accurately based ONLY on the content of the attached document.
-Always cite the page number(s) where you found the information. If the document doesn't contain page numbers, estimate based on the position in the document.
-For each citation, include a short excerpt (the exact relevant sentence or phrase from the document).
-If the answer is not found in the document, say so clearly and return an empty citations array.`,
+      `You are a document assistant. Answer the user's questions about their attached document.
+
+When answering:
+- Base your answer ONLY on the document content.
+- Cite page numbers (or estimate position) and include short excerpts.
+- If the information is not in the document, say so clearly and return empty citations.
+
+╔══════════════════════════════════════════════════════════════╗
+║  OUTPUT LANGUAGE: ${effectiveLanguage.toUpperCase()}
+║  ═══════════════════════════════════════════════════════════
+║  This is a HARD CONSTRAINT. Your entire answer MUST be
+║  in ${effectiveLanguage}. This overrides everything else.
+║
+║  DO NOT match the user's input language.
+║  DO NOT switch languages mid-response.
+║  DO NOT mix languages.
+║  Even if the user writes in another language,
+║  you STILL answer in ${effectiveLanguage}.
+║
+║  LANGUAGE DEFINITION:
+${languageInstruction.split('\n').map((l) => `║  ${l}`).join('\n')}
+║
+║  VIOLATING THIS RULE IS A CRITICAL ERROR.
+╚══════════════════════════════════════════════════════════════╝`,
     );
 
     // Build conversation history
@@ -322,10 +336,7 @@ If the answer is not found in the document, say so clearly and return an empty c
 
     // Determine content type and build the final human message
     const mimeType = this.guessMime(documentUrl);
-    const isExcelMime =
-      mimeType ===
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      mimeType === 'application/vnd.ms-excel';
+    const isExcelMime = isExcelMimeType(mimeType);
 
     let finalHumanMessage: HumanMessage;
 
@@ -351,7 +362,7 @@ If the answer is not found in the document, say so clearly and return an empty c
         content: [
           {
             type: 'text',
-            text: `Document CSV content:\n\n${processedCsv}\n\nUser question: ${userQuestion}`,
+            text: `Document CSV content:\n\n${processedCsv}\n\nUser question: ${userQuestion}\n\n[Reply in ${effectiveLanguage} only — do not match my language]`,
           },
         ],
       });
@@ -362,6 +373,10 @@ If the answer is not found in the document, say so clearly and return an empty c
         content: [
           { type: 'text', text: userQuestion },
           { type: 'media', mimeType, data: base64String },
+          {
+            type: 'text',
+            text: `[Reply in ${effectiveLanguage} only — do not match my language]`,
+          },
         ],
       });
     }

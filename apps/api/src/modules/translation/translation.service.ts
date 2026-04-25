@@ -277,11 +277,19 @@ Calculate a confidence score (0-100). If the phrase is too ambiguous even with c
 CRITICAL CONTEXT: The user has provided a custom dictionary for their specific slang. You MUST prioritize these definitions if they appear in the text: ${payload.userDictionary}
 Always use terms that are commonly used and easily understood by users. Do not use niche terms known only by a small group. If the input contains uncommon terms, replace them with more common alternatives in the translations, but keep the original term in the transcription.
 
+INAUDIBILITY RULES (CRITICAL — you MUST follow these for ANY audio input):
+- If the ENTIRE audio is silent, near-silent, contains only background noise, static, breathing, wind, or unintelligible mumbling — set "transcription" to "[inaudible]", "confidenceScore" to 0, "translations" to { "singlish": "[inaudible]", "tanglish": "[inaudible]", "english": "[inaudible]" }, and "extractedActions" to [].
+- If ONLY SOME PARTS of the audio are inaudible or unclear, transcribe the audible parts normally and mark the inaudible portions as "[inaudible]" inline within the transcription and translations. Example: "I think [inaudible] should work for this".
+- NEVER invent, guess, hallucinate, or "fill in" words, sentences, names, meetings, reminders, or calendar events that are not CLEARLY and UNMISTAKABLY spoken in the audio. Background noise is NOT speech and must never be interpreted as words.
+- If you are less than 80% confident that you heard a word or phrase correctly, mark it as "[inaudible]" rather than guessing.
+- It is ALWAYS better to return "[inaudible]" and lower the confidence score than to hallucinate content that was not actually said. Users prefer "I couldn't hear that" over fabricated content.
+- UNDER NO CIRCUMSTANCES should you fabricate plausible-sounding text from silence or noise.
+
 ACTION EXTRACTION — In addition to translating, analyze the intent of the message.
 If it contains a clear, actionable request for a meeting, deadline, study session (kuppiya), or reminder, extract structured data into the "extractedActions" array.
 Rules:
 - CRITICAL: Only extract actions when there is an EXPLICIT, UNAMBIGUOUS intent stated in clear speech. NEVER hallucinate or infer actions that were not explicitly spoken.
-- If the audio quality is poor, unclear, or you are not 90%+ confident about the spoken content, do NOT extract any actions — return an empty array.
+- If the audio quality is poor, unclear, contains "[inaudible]" markers, or you are not 90%+ confident about the spoken content, do NOT extract any actions — return an empty array.
 - Do NOT extract actions from background noise, mumbling, or unclear speech.
 - "type" is MEETING for group events, study sessions, calls, hangouts. REMINDER for personal tasks, deadlines, todos.
 - "title" should be concise and descriptive in English (e.g. "Database kuppiya session").
@@ -354,7 +362,16 @@ Examples of messages WITHOUT actions:
         content: [
           {
             type: 'text',
-            text: 'Transcribe this audio in its native dialect, then translate it.',
+            text:
+              'Transcribe this audio in its native dialect, then translate the intent. ' +
+              'CRITICAL SILENCE / INAUDIBILITY RULES (you MUST follow these strictly):\n' +
+              '1. If the audio is silent, near-silent, contains only background noise, breathing, wind, or static — ' +
+              'set "transcription" to "[inaudible]", "confidenceScore" to 0, and "extractedActions" to [].\n' +
+              '2. If only parts of the audio are unclear, transcribe what you CAN hear and mark unclear/inaccessible portions as "[inaudible]" inline.\n' +
+              '3. Do NOT invent, guess, or hallucinate words, sentences, meetings, reminders, or calendar events that are not CLEARLY and UNMISTAKABLY spoken in the audio.\n' +
+              '4. If you are less than 80% confident that you can hear real, intelligible human speech, treat it as inaudible: transcription="[inaudible]", confidenceScore=0.\n' +
+              '5. NEVER extract actions (meetings, reminders, deadlines) unless the speech is clearly audible AND explicitly mentions a specific event or task. Random background noise is NOT speech.\n' +
+              '6. It is ALWAYS better to return "[inaudible]" than to hallucinate content that was not actually said. Fabricating text from silence is strictly forbidden.',
           },
           {
             type: 'media',

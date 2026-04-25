@@ -263,22 +263,31 @@ export class AudioController {
       } = result;
 
       // ── Audibility gate ─────────────────────────────────────────────────
+      const transcriptionIsInaudibleMarker =
+        transcription &&
+        transcription.trim().toLowerCase() === '[inaudible]';
       const appearsInaudible =
         (confidenceScore !== null && confidenceScore <= 25) ||
         !transcription ||
-        transcription.trim().length === 0;
+        transcription.trim().length === 0 ||
+        transcriptionIsInaudibleMarker;
 
       if (appearsInaudible) {
         this.logger.warn(
-          `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}`,
+          `[transcribeAndBroadcast] Inaudible audio: messageId=${messageId}, confidenceScore=${confidenceScore}, isInaudibleMarker=${transcriptionIsInaudibleMarker}`,
         );
 
         const inaudibleScore = confidenceScore ?? 0;
+        const inaudibleTranscription = transcriptionIsInaudibleMarker
+          ? '[inaudible]'
+          : null;
+        const inaudibleTranslations = transcriptionIsInaudibleMarker
+          ? { singlish: '[inaudible]', tanglish: '[inaudible]', english: '[inaudible]' }
+          : null;
 
-        // Persist as inaudible instead of bailing
         await this.chatService.updateMessageWithTranslation(messageId, {
-          transcription: null,
-          translations: null,
+          transcription: inaudibleTranscription,
+          translations: inaudibleTranslations,
           detectedLanguage: null,
           originalTone: null,
           translatedAudioUrls: null,
@@ -291,15 +300,15 @@ export class AudioController {
           userId,
           {
             messageId,
-            transcription: null,
-            translations: null,
+            transcription: inaudibleTranscription,
+            translations: inaudibleTranslations,
             detectedLanguage: null,
             originalTone: null,
             translatedAudioUrls: null,
             confidenceScore: inaudibleScore,
             extractedActions: null,
           },
-          'Sent an audio message',
+          '[inaudible]',
         );
 
         this.logger.log(

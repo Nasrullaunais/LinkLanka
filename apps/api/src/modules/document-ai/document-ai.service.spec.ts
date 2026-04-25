@@ -141,7 +141,7 @@ describe('DocumentAiService', () => {
       expect(mockSheetToCsv).toHaveBeenCalledTimes(2);
     });
 
-    it('caps at 10 sheets and logs warning for remainder', () => {
+    it('caps at 10 sheets', () => {
       const sheetNames = Array.from({ length: 12 }, (_, i) => `Sheet${i + 1}`);
       const sheets: Record<string, object> = {};
       sheetNames.forEach((name) => {
@@ -151,19 +151,10 @@ describe('DocumentAiService', () => {
       mockSheetToCsv.mockReturnValue('x');
 
       const service = createService();
-      const warnSpy = jest
-        .spyOn((service as any).logger, 'warn')
-        .mockImplementation(() => {});
-
       const result = (service as any).convertExcelToCsv(Buffer.from('x'));
 
       const sheetCount = (result.match(/## Sheet:/g) || []).length;
       expect(sheetCount).toBe(10);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('12 sheets'),
-      );
-
-      warnSpy.mockRestore();
     });
 
     it('throws BadRequestException for password-protected file', () => {
@@ -256,13 +247,15 @@ describe('DocumentAiService', () => {
       const humanMessage = messages[messages.length - 1];
       const content = (humanMessage as any).content;
       expect(Array.isArray(content)).toBe(true);
-      expect(content.length).toBe(2);
+      expect(content.length).toBe(3);
       expect(content[0].type).toBe('text');
       expect(content[0].text).toBe('What is this?');
       expect(content[1].type).toBe('media');
       expect(content[1].mimeType).toBe('application/pdf');
       expect(typeof content[1].data).toBe('string');
       expect(content[1].data.length).toBeGreaterThan(0);
+      expect(content[2].type).toBe('text');
+      expect(content[2].text).toContain('[Reply in');
     });
 
     it('truncates CSV at 100K chars and appends note', async () => {
@@ -388,7 +381,7 @@ describe('DocumentAiService', () => {
   });
 
   describe('system prompt language enforcement', () => {
-    it('contains LANGUAGE OUTPUT RULE with effectiveLanguage', async () => {
+    it('contains hard language constraint with effectiveLanguage', async () => {
       const message: MockMessage = {
         id: 'msg-1',
         contentType: MockContentType.DOCUMENT,
@@ -408,8 +401,9 @@ describe('DocumentAiService', () => {
 
       const messages = mockInvoke.mock.calls[0][0];
       const systemMsg = messages[0];
-      expect((systemMsg as any).content).toContain('LANGUAGE OUTPUT RULE');
-      expect((systemMsg as any).content).toContain('answer ONLY in tanglish');
+      expect((systemMsg as any).content).toContain('OUTPUT LANGUAGE');
+      expect((systemMsg as any).content).toContain('HARD CONSTRAINT');
+      expect((systemMsg as any).content).toContain('TANGLISH');
     });
   });
 
@@ -434,9 +428,8 @@ describe('DocumentAiService', () => {
 
       const messages = mockInvoke.mock.calls[0][0];
       const systemMsg = messages[0];
-      expect((systemMsg as any).content).toContain(
-        'answer ONLY in singlish',
-      );
+      expect((systemMsg as any).content).toContain('OUTPUT LANGUAGE');
+      expect((systemMsg as any).content).toContain('SINGLISH');
     });
 
     it('falls back to detectedLanguage when no preference', async () => {
@@ -459,9 +452,8 @@ describe('DocumentAiService', () => {
 
       const messages = mockInvoke.mock.calls[0][0];
       const systemMsg = messages[0];
-      expect((systemMsg as any).content).toContain(
-        'answer ONLY in tanglish',
-      );
+      expect((systemMsg as any).content).toContain('OUTPUT LANGUAGE');
+      expect((systemMsg as any).content).toContain('TANGLISH');
     });
   });
 });
