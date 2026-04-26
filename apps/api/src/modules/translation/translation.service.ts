@@ -55,6 +55,12 @@ interface AudioGenerationJob {
   maxAttempts: number;
 }
 
+interface TtsPromptVariant {
+  name: 'strict' | 'relaxed' | 'transcript-only';
+  prompt: string;
+  includeVoiceConfig: boolean;
+}
+
 function getIsoLikeInTimezone(
   date: Date,
   timeZone: string,
@@ -933,23 +939,87 @@ Examples of messages WITHOUT actions:
     language: SupportedLanguage;
     tone: string;
   }): Promise<Buffer> {
-    const prompt = this.buildTtsPrompt(params);
+    const variants = this.buildTtsPromptVariants(params);
+    let lastError: unknown = null;
+
+    for (const variant of variants) {
+      try {
+        const payload = await this.requestTtsResponse({
+          prompt: variant.prompt,
+          includeVoiceConfig: variant.includeVoiceConfig,
+        });
+
+        const encoded = this.extractInlineAudioBase64(payload);
+        if (encoded) {
+          if (variant.name !== 'strict') {
+            this.logger.warn(
+              `[generateSpeechWav] Recovered audio for language=${params.language} via variant=${variant.name}`,
+            );
+          }
+
+          const pcm = Buffer.from(encoded, 'base64');
+          return this.pcm16ToWav(pcm, 24_000, 1);
+        }
+
+        const textFallback = this.extractTextContent(payload);
+        const noAudioError = new Error(
+          'Gemini TTS response did not include inline audio data',
+        );
+
+        this.logger.warn(
+          `[generateSpeechWav] TTS variant=${variant.name} returned text-only (no audio) for language=${params.language}: ${textFallback}`,
+        );
+
+        lastError = noAudioError;
+      } catch (error) {
+        const variantError =
+          error instanceof Error ? error : new Error(String(error));
+        this.logger.warn(
+          `[generateSpeechWav] TTS variant=${variant.name} request failed for language=${params.language}: ${variantError.message}`,
+        );
+        lastError = variantError;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+
+    throw new Error('Gemini TTS response did not include inline audio data');
+  }
+
+  private async requestTtsResponse(params: {
+    prompt: string;
+    includeVoiceConfig: boolean;
+  }): Promise<unknown> {
+    const generationConfig: {
+      responseModalities: string[];
+      speechConfig?: {
+        voiceConfig: {
+          prebuiltVoiceConfig: {
+            voiceName: string;
+          };
+        };
+      };
+    } = {
+      responseModalities: ['AUDIO'],
+    };
+
+    if (params.includeVoiceConfig) {
+      generationConfig.speechConfig = {
+        voiceConfig: {
+          prebuiltVoiceConfig: {
+            voiceName: 'Achird',
+          },
+        },
+      };
+    }
 
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${this.ttsModel}:generateContent`,
       {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: 'Achird',
-              },
-            },
-          },
-        },
-        model: this.ttsModel,
+        contents: [{ parts: [{ text: params.prompt }] }],
+        generationConfig,
       },
       {
         headers: {
@@ -960,13 +1030,54 @@ Examples of messages WITHOUT actions:
       },
     );
 
-    const encoded = this.extractInlineAudioBase64(response.data);
-    if (!encoded) {
-      throw new Error('Gemini TTS response did not include inline audio data');
+    return response.data;
+  }
+
+  private buildTtsPromptVariants(params: {
+    transcript: string;
+    language: SupportedLanguage;
+    tone: string;
+  }): TtsPromptVariant[] {
+    const transcript = this.normalizeTranscriptForTts(params.transcript);
+
+    return [
+      {
+        name: 'strict',
+        prompt: this.buildTtsPrompt({
+          transcript,
+          language: params.language,
+          tone: params.tone,
+        }),
+        includeVoiceConfig: true,
+      },
+      {
+        name: 'relaxed',
+        prompt: this.buildRelaxedTtsPrompt({
+          transcript,
+          language: params.language,
+          tone: params.tone,
+        }),
+        includeVoiceConfig: true,
+      },
+      {
+        name: 'transcript-only',
+        prompt: this.buildTranscriptOnlyTtsPrompt(transcript),
+        includeVoiceConfig: false,
+      },
+    ];
+  }
+
+  private normalizeTranscriptForTts(transcript: string): string {
+    const cleaned = transcript
+      .replace(/\[(?:inaudible|unclear)\]/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (cleaned.length > 0) {
+      return cleaned;
     }
 
-    const pcm = Buffer.from(encoded, 'base64');
-    return this.pcm16ToWav(pcm, 24_000, 1);
+    return transcript.replace(/\s+/g, ' ').trim();
   }
 
   private extractInlineAudioBase64(payload: unknown): string | null {
@@ -979,12 +1090,20 @@ Examples of messages WITHOUT actions:
       const parts =
         (
           candidate as {
-            content?: { parts?: Array<{ inlineData?: { data?: string } }> };
+            content?: {
+              parts?: Array<{
+                inlineData?: { data?: string };
+                inline_data?: { data?: string };
+              }>;
+            };
           }
         ).content?.parts ?? [];
 
       for (const part of parts) {
-        const data = part.inlineData?.data;
+        const data =
+          part.inlineData?.data ??
+          part.inline_data?.data ??
+          (part as { audio?: { data?: string } }).audio?.data;
         if (typeof data === 'string' && data.length > 0) {
           return data;
         }
@@ -992,6 +1111,71 @@ Examples of messages WITHOUT actions:
     }
 
     return null;
+  }
+
+  private extractTextContent(payload: unknown): string {
+    if (!payload || typeof payload !== 'object') return '(empty payload)';
+
+    const candidates = (payload as { candidates?: unknown[] }).candidates;
+    const promptFeedback = (
+      payload as { promptFeedback?: { blockReason?: string } }
+    ).promptFeedback;
+
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      if (promptFeedback?.blockReason) {
+        return `(no candidates, blockReason=${promptFeedback.blockReason})`;
+      }
+      return '(no candidates)';
+    }
+
+    const texts: string[] = [];
+    for (const candidate of candidates) {
+      const finishReason = (candidate as { finishReason?: string })
+        .finishReason;
+      const parts =
+        (candidate as { content?: { parts?: Array<{ text?: string }> } })
+          .content?.parts ?? [];
+
+      for (const part of parts) {
+        if (typeof part.text === 'string' && part.text.trim().length > 0) {
+          texts.push(part.text.trim());
+        }
+      }
+
+      if (finishReason) {
+        texts.push(`[finishReason=${finishReason}]`);
+      }
+    }
+
+    return texts.length > 0 ? texts.join(' | ') : '(no text in response)';
+  }
+
+  private buildRelaxedTtsPrompt(params: {
+    transcript: string;
+    language: SupportedLanguage;
+    tone: string;
+  }): string {
+    const languageHint =
+      params.language === 'singlish'
+        ? 'Sri Lankan Singlish (Sinhala words written in English characters)'
+        : params.language === 'tanglish'
+          ? 'Sri Lankan Tanglish (Tamil words written in English characters)'
+          : 'Sri Lankan English';
+
+    return [
+      `Speak the transcript naturally in ${languageHint}.`,
+      `Tone: ${params.tone || 'neutral'}.`,
+      'Do not add or remove words.',
+      '',
+      'Transcript:',
+      params.transcript,
+    ].join('\n');
+  }
+
+  private buildTranscriptOnlyTtsPrompt(transcript: string): string {
+    return ['Speak this exact transcript as natural speech:', transcript].join(
+      '\n',
+    );
   }
 
   private buildTtsPrompt(params: {

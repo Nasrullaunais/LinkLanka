@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 
 import {
   TranslationService,
@@ -91,7 +92,7 @@ describe('TranslationService', () => {
       originalTone: 'neutral',
     });
 
-    expect(generateSpeechSpy).toHaveBeenCalledTimes(3);
+    expect(generateSpeechSpy).toHaveBeenCalledTimes(4);
     expect(Object.keys(output).sort()).toEqual(['english', 'singlish']);
     expect(output.english).toContain(
       'https://amzn-leo-bucket.s3.amazonaws.com/linklanka/tts/tts-english-',
@@ -294,5 +295,50 @@ describe('TranslationService', () => {
     expect(output.singlish).toBeDefined();
     expect(output.tanglish).toBeDefined();
     expect(generateSpeechSpy).toHaveBeenCalled();
+  });
+
+  it('falls back to a simpler prompt when strict TTS response has no inline audio', async () => {
+    const service = createService();
+    const textOnlyPayload = {
+      candidates: [
+        {
+          content: {
+            parts: [{ text: 'I can only provide text for this request.' }],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    };
+    const audioPayload = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { inlineData: { data: Buffer.from('pcm').toString('base64') } },
+            ],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    };
+
+    const axiosPostSpy = jest
+      .spyOn(axios, 'post')
+      .mockResolvedValueOnce({ data: textOnlyPayload })
+      .mockResolvedValueOnce({ data: audioPayload });
+
+    const output = await service.generateTranslatedAudioFiles({
+      translations: {
+        english: '',
+        singlish: 'Ado machan kohomada',
+        tanglish: '',
+      },
+      detectedLanguage: 'singlish',
+      originalTone: 'neutral',
+    });
+
+    expect(output.singlish).toBeDefined();
+    expect(axiosPostSpy).toHaveBeenCalledTimes(2);
+    expect(uploadBufferMock).toHaveBeenCalledTimes(1);
   });
 });
