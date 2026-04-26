@@ -1008,11 +1008,6 @@ function MessageBubble({
   const showPendingSendStatus = isOwn && isOptimistic && sendStatus === 'sending';
   const showFailedSendStatus = isOwn && isOptimistic && sendStatus === 'failed';
 
-  const languageContext = useMemo(
-    () => ({ preferredLanguage, showTranslatedOnly }),
-    [preferredLanguage, showTranslatedOnly],
-  );
-
   // Cap bubble width on large screens so messages do not become overly wide.
   const rowMaxWidth = useMemo(
     () => Math.min(Math.round(screenWidth * 0.78), 620),
@@ -1243,7 +1238,7 @@ function MessageBubble({
       default:
         return null;
     }
-  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeOwn, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation, preferredLanguage, showTranslatedOnly]);
+  }, [contentType, rawContent, isOwn, message.id, message.createdAt, message.detectedLanguage, message.fileName, confidenceScore, translations, message.isTranslating, message.isOptimistic, sendStatus, audioBubbleWidth, colors.bubbleOwnText, colors.bubbleReceivedText, colors.audioTimeOwn, colors.audioTimeReceived, colors.primaryFaded, onOpenDocumentInterrogation, onRetry, preferredLanguage, showTranslatedOnly]);
 
   // In normal mode nothing happens; in selection mode the tap selects/
   // deselects. Checking the shared value instead of a React boolean means
@@ -1356,7 +1351,7 @@ function MessageBubble({
               </Pressable>
             )}
 
-            {!(showTranslatedOnly && !isOwn) && (
+            {!(showTranslatedOnly && !isOwn && contentType === 'TEXT') && (
               <TranslationSection
                 isOwn={isOwn}
                 showMediating={showMediating}
