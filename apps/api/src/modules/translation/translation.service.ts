@@ -1061,7 +1061,10 @@ Examples of messages WITHOUT actions:
       },
       {
         name: 'transcript-only',
-        prompt: this.buildTranscriptOnlyTtsPrompt(transcript),
+        prompt: this.buildTranscriptOnlyTtsPrompt({
+          transcript,
+          language: params.language,
+        }),
         includeVoiceConfig: false,
       },
     ];
@@ -1157,25 +1160,47 @@ Examples of messages WITHOUT actions:
   }): string {
     const languageHint =
       params.language === 'singlish'
-        ? 'Sri Lankan Singlish (Sinhala words written in English characters)'
+        ? 'Sinhala (Sri Lanka). The transcript may be Singlish (Sinhala written in English letters), so pronounce it as natural Sinhala speech'
         : params.language === 'tanglish'
           ? 'Sri Lankan Tanglish (Tamil words written in English characters)'
           : 'Sri Lankan English';
 
-    return [
+    const lines = [
       `Speak the transcript naturally in ${languageHint}.`,
       `Tone: ${params.tone || 'neutral'}.`,
       'Do not add or remove words.',
       '',
       'Transcript:',
       params.transcript,
-    ].join('\n');
+    ];
+
+    if (params.language === 'singlish') {
+      lines.splice(
+        2,
+        0,
+        'Interpret English-letter transliteration phonetically as Sinhala words. Do not read it as English spelling.',
+      );
+    }
+
+    return lines.join('\n');
   }
 
-  private buildTranscriptOnlyTtsPrompt(transcript: string): string {
-    return ['Speak this exact transcript as natural speech:', transcript].join(
-      '\n',
-    );
+  private buildTranscriptOnlyTtsPrompt(params: {
+    transcript: string;
+    language: SupportedLanguage;
+  }): string {
+    if (params.language === 'singlish') {
+      return [
+        'Speak this exact transcript as natural Sinhala (Sri Lanka) speech.',
+        'The transcript may use English letters to represent Sinhala sounds. Interpret it phonetically as Sinhala and do not spell the letters in English.',
+        params.transcript,
+      ].join('\n');
+    }
+
+    return [
+      'Speak this exact transcript as natural speech:',
+      params.transcript,
+    ].join('\n');
   }
 
   private buildTtsPrompt(params: {
@@ -1187,10 +1212,13 @@ Examples of messages WITHOUT actions:
       params.language === 'tanglish'
         ? 'Sri Lankan Tamil-influenced accent'
         : params.language === 'singlish'
-          ? 'Sri Lankan Sinhala-influenced accent'
+          ? 'native Sri Lankan Sinhala accent'
           : 'clear Sri Lankan English accent';
 
-    return [
+    const languageTargetLabel =
+      params.language === 'singlish' ? 'sinhala (Sri Lanka)' : params.language;
+
+    const lines = [
       '# AUDIO PROFILE: LinkLanka Voice Talent',
       '## "Chat Voice Translation"',
       '',
@@ -1200,14 +1228,24 @@ Examples of messages WITHOUT actions:
       `Style: ${params.tone || 'neutral'}`,
       'Pacing: Natural conversational pacing with clear diction.',
       `Accent: ${accentHint}`,
-      `Language Target: ${params.language}`,
+      `Language Target: ${languageTargetLabel}`,
       'Strict Language Rule: Speak only in the requested Language Target. Do not drift into the other two LinkLanka language styles.',
       'Code-Mix Rule: If the provided transcript contains incidental foreign words, keep pronunciation natural but preserve the requested target style as dominant.',
       'Pronunciation: If transliterated Sri Lankan words appear, pronounce them naturally as used in Sri Lanka.',
       '',
       '#### TRANSCRIPT',
       params.transcript,
-    ].join('\n');
+    ];
+
+    if (params.language === 'singlish') {
+      lines.splice(
+        12,
+        0,
+        'Singlish Handling Rule: The transcript can be Sinhala words written with English letters. Render it as spoken Sinhala, not as English words.',
+      );
+    }
+
+    return lines.join('\n');
   }
 
   private pcm16ToWav(

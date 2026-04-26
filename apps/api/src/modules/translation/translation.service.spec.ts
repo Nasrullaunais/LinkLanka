@@ -337,8 +337,16 @@ describe('TranslationService', () => {
       originalTone: 'neutral',
     });
 
+    const firstCall = axiosPostSpy.mock.calls[0] as unknown[] | undefined;
+    const maybeBody = firstCall?.[1];
+    const requestBody = maybeBody as {
+      contents?: Array<{ parts?: Array<{ text?: string }> }>;
+    };
+    const strictPrompt = requestBody.contents?.[0]?.parts?.[0]?.text ?? '';
+
     expect(output.singlish).toBeDefined();
     expect(axiosPostSpy).toHaveBeenCalledTimes(2);
+    expect(strictPrompt).toContain('Language Target: sinhala (Sri Lanka)');
     expect(uploadBufferMock).toHaveBeenCalledTimes(1);
   });
 });
