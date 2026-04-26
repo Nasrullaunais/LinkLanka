@@ -745,10 +745,7 @@ Examples of messages WITHOUT actions:
       .map((language) => ({
         language,
         text: params.translations[language]?.trim() ?? '',
-        maxAttempts:
-          englishIsMandatory && language === 'english'
-            ? 1 + this.mandatoryEnglishRetries
-            : 1,
+        maxAttempts: 1 + this.mandatoryEnglishRetries,
       }))
       .filter((job) => job.text.length > 0);
 
@@ -813,6 +810,18 @@ Examples of messages WITHOUT actions:
     if (englishIsMandatory && !output.english) {
       this.logger.warn(
         '[generateTranslatedAudioFiles] Mandatory English audio missing after retries',
+      );
+    }
+
+    if (!output.singlish) {
+      this.logger.warn(
+        '[generateTranslatedAudioFiles] Singlish audio missing after all retries',
+      );
+    }
+
+    if (!output.tanglish) {
+      this.logger.warn(
+        '[generateTranslatedAudioFiles] Tanglish audio missing after all retries',
       );
     }
 
