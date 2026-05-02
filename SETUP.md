@@ -107,7 +107,7 @@ Set-Location apps/api
 bun install
 Set-Location ../mobile
 bun install
-```
+
 
 1. Run mobile.
 
