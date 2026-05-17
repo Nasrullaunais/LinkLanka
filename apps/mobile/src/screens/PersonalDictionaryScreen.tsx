@@ -168,7 +168,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
     } catch (error) {
       Alert.alert(
         'Error',
-        getApiErrorMessage(error, 'Could not load your dictionary. Please try again.'),
+        getApiErrorMessage(error, 'Unable to load your dictionary. Please try again.'),
       );
     } finally {
       setIsLoading(false);
@@ -301,7 +301,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
       await loadData();
     } catch (error) {
       setSubmitError(
-        getApiErrorMessage(error, 'Could not save this dictionary entry. Please try again.'),
+        getApiErrorMessage(error, 'Unable to save this entry. Please try again.'),
       );
     } finally {
       setIsSubmitting(false);
@@ -333,7 +333,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
               } catch (error) {
                 Alert.alert(
                   'Error',
-                  getApiErrorMessage(error, 'Could not delete this dictionary entry.'),
+                  getApiErrorMessage(error, 'Unable to remove this dictionary entry.'),
                 );
               }
             },
@@ -409,7 +409,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
           </Text>
         </View>
         <Text style={[styles.totalCardSubtitle, { color: colors.textSecondary }]}> 
-          50 entries per language bucket. You can store up to 150 entries in total.
+          You can save up to {countSummary.totalMax} entries across all languages. Each language has its own bucket with a maximum capacity.
         </Text>
       </View>
 
@@ -473,7 +473,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
           <Ionicons name="arrow-back" size={24} color={colors.headerText} />
         </Pressable>
 
-        <Text style={[styles.headerTitle, { color: colors.headerText }]}>My Dictionary</Text>
+        <Text style={[styles.headerTitle, { color: colors.headerText }]}>My Personal Dictionary</Text>
 
         <View style={[styles.headerCounter, { backgroundColor: colors.headerAvatarBg }]}> 
           <Text style={[styles.headerCounterText, { color: colors.headerText }]}> 
@@ -631,7 +631,7 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
             </Text>
             {editingEntry ? (
               <Text style={[styles.immutableHint, { color: colors.textTertiary }]}> 
-                Word cannot be changed after creation.
+                This word cannot be changed after saving.
               </Text>
             ) : null}
 
@@ -669,27 +669,34 @@ export default function PersonalDictionaryScreen({ navigation }: Props) {
             ) : null}
 
             <Pressable
-              onPress={handleSubmit}
-              disabled={submitDisabled}
-              style={[
-                styles.submitButton,
-                {
-                  backgroundColor: submitDisabled ? colors.border : colors.primary,
-                },
-              ]}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text
-                  style={[
-                    styles.submitButtonText,
-                    { color: submitDisabled ? colors.textSecondary : '#fff' },
-                  ]}
-                >
-                  {editingEntry ? 'Save Changes' : 'Add Entry'}
-                </Text>
-              )}
+                onPress={handleSubmit}
+                disabled={submitDisabled}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: submitDisabled, busy: isSubmitting }}
+                style={[
+                  styles.submitButton,
+                  {
+                    backgroundColor: submitDisabled ? colors.border : colors.primary,
+                  },
+                ]}
+              >
+                {isSubmitting ? (
+                  <View style={styles.submitLoadingContent}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={[styles.submitButtonText, { color: '#fff' }]}>
+                      Saving...
+                    </Text>
+                  </View>
+                ) : (
+                  <Text
+                    style={[
+                      styles.submitButtonText,
+                      { color: submitDisabled ? colors.textSecondary : '#fff' },
+                    ]}
+                  >
+                    {editingEntry ? 'Save Changes' : 'Add Entry'}
+                  </Text>
+                )}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -790,12 +797,15 @@ const styles = StyleSheet.create({
   },
 
   entryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
   },
   entryContent: {
     flex: 1,
@@ -830,10 +840,10 @@ const styles = StyleSheet.create({
   },
 
   emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
+     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
+    paddingVertical: 48,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
     fontSize: 18,
@@ -857,13 +867,19 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   addButton: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 14,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'row',
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    marginTop: 18,
     gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
   addButtonText: {
     fontSize: 15,
@@ -875,10 +891,15 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 22,
+    paddingBottom: Platform.OS === 'ios' ? 42 : 26,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 8,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -919,10 +940,11 @@ const styles = StyleSheet.create({
 
   input: {
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
     fontSize: 16,
+    marginTop: 2,
   },
   multilineInput: {
     minHeight: 86,
@@ -951,5 +973,11 @@ const styles = StyleSheet.create({
   submitButtonText: {
     fontSize: 16,
     fontWeight: '700',
+  },
+  submitLoadingContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
 });
